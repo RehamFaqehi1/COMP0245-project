@@ -326,3 +326,140 @@ identities and may be rejected for appending by the existing checks. Runner-only
 source hashes do not yet fingerprint all extracted modules. Keep new demo results
 separate from historical results; compare only matched targets, observation
 conditions and evaluation protocols.
+
+
+## PyBullet GUI — Demo Commands
+
+This section demonstrates the Original Expert and seven trained MLP models using PyBullet simulation.
+
+All commands run from the project root in WSL Ubuntu:
+
+```bash
+cd ~/COMP0245-project
+```
+
+The `--no-save` option allows repeated simulations without generating new result files. Playback speed is set to 3.
+
+### 1. Original Expert — Target 30
+
+The original controller combines mobile base navigation and robotic arm control to generate expert demonstrations.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller expert --target-id 30 --observations noisy --no-save
+```
+
+### 2. Baseline33 — Clean Trained — Target 30
+
+An MLP trained with 33 input features using clean expert demonstrations.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller clean --target-id 30 --observations noisy --no-save
+```
+
+### 3. Baseline33 — Noisy Trained — Target 30
+
+The same 33-input MLP architecture trained on noisy demonstrations to improve robustness to measurement noise.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller noisy --target-id 30 --observations noisy --no-save
+```
+
+### 4. Goal35 — Target 39
+
+Added distance to the navigation goal and heading error, increasing the input size to 35.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller goal35 \
+--goal35-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_goal35_scaled_full/best_model.pt \
+--target-id 39 --observations noisy --no-save
+```
+
+### 5. Goal35 Reaching2 — Target 39
+
+The same 35 features, with double training loss weight during the reaching phase.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller goal35 \
+--goal35-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_goal35_reaching2_scaled_full/best_model.pt \
+--target-id 39 --observations noisy --no-save
+```
+
+### 6. History70 — Target 46
+
+Extended Goal35 with observations from 100 ms earlier, producing 70 input features.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller history70 \
+--history70-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_history70_scaled_full/best_model.pt \
+--target-id 46 --observations noisy --no-save
+```
+
+### 7. Target37 — Target 48
+
+Added four target-relative features: body-frame X/Y position, planar distance and heading error.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller target37 --target-id 48 \
+--observations noisy --no-save
+```
+
+### 8. Target37 Filtered — Target 53
+
+Applied causal two-stage smoothing to estimate six base motion features, reducing sensitivity to noisy derivatives.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --gui --playback-speed 3 \
+--controller target37_filtered --target-id 53 \
+--observations noisy --no-save
+```
+
+### Strict Success Rate — Multiple Targets
+
+To calculate success rate, replace `--target-id` with `--target-ids` and specify multiple validation targets.
+
+Example for Baseline33 Noisy:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
+python ./final/robotnik_arm_task/train_mlp.py \
+--closed-loop --controller noisy \
+--target-ids 3 28 30 48 53 \
+--observations noisy --no-save
+```
+
+The terminal reports success/failure for each episode and the overall strict success rate.
+
+For a fair comparison, evaluate all controllers using the same validation target IDs and observation conditions.
+
+**Notes:**
+
+- These demonstrations use pretrained checkpoints only.
+- No training or dataset generation is performed.
+- `--no-save` prevents new evaluation reports from being generated.
+- Offline accuracy does not guarantee successful closed-loop robot behaviour.
+- Commands for models not yet tested with `--no-save` should be verified before the live demonstration.
+
+
