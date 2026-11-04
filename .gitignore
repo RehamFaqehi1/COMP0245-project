@@ -1,0 +1,7 @@
+RoboEnv/
+provenance/
+final/robotnik_arm_task/results/datasets/
+final/robotnik_arm_task/results/metadata/*.sqlite
+.pixi/
+__pycache__/
+*.pyc

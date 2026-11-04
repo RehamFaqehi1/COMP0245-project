@@ -1,0 +1,29 @@
+{
+  "valid": true,
+  "target_counts": {
+    "train": 350,
+    "validation": 75,
+    "test": 75
+  },
+  "rows": {
+    "clean": {
+      "train": 3074290,
+      "validation": 619523,
+      "test": 624121
+    },
+    "noisy": {
+      "train": 2895827,
+      "validation": 616860,
+      "test": 619236
+    }
+  },
+  "output_sha256": {
+    "processed_data\\train_clean.csv": "0d0dea5c4c164de04512dc1db738cbf6b936a3a6aa0a82b3b8c577ce6e768b16",
+    "processed_data\\validation_clean.csv": "af2d2e0acbf4363dd6c3e2cbcc75a17edd0410c142d12e338677b3832a7463d2",
+    "processed_data\\test_clean.csv": "11d2a72def4ab505cb0df646041da6329dfbd0be14945317c78432d91d8774c1",
+    "processed_data\\train_noisy.csv": "33600e9483d5f7f238c3b85d8fb499c142276ffad65283689c71859790f6f1b2",
+    "processed_data\\validation_noisy.csv": "0f965fcccf82067e61f2773c03f7d949aec24945d4b5bc6f7e7a22591536565e",
+    "processed_data\\test_noisy.csv": "6c8d5a8b62867272f4fc6d5343d9ee824bc410a6e3c87bfab431a30899c0b6b5"
+  },
+  "note": "Shared target-ID assignments, no row splitting, no scalers fitted."
+}
