@@ -65,10 +65,13 @@ def checkpoint_features(checkpoint):
         raise ValueError('History policy mismatch or unintended reaching weighting')
     if feature_set in ('target37','target37_mask6','target37_filtered'):
         config = checkpoint['configuration']
+        expected_config = dict(TARGET37_CONFIG)
+        if feature_set in ('target37','target37_filtered') and config.get('condition')=='clean':
+            expected_config['condition'] = 'clean'
         if (checkpoint.get('feature_calculation')!=TARGET_FEATURE_POLICY
                 or checkpoint['preprocessing']['kind']!='scaled'
                 or config.get('feature_set')!=feature_set
-                or any(config.get(k)!=v for k,v in TARGET37_CONFIG.items())
+                or any(config.get(k)!=v for k,v in expected_config.items())
                 or config.get('weight_reaching',False)
                 or checkpoint.get('training_weighting') is not None
                 or checkpoint.get('history') is not None):
@@ -332,7 +335,7 @@ def main():
                         help='Select in-memory baseline/goal/history/target-relative features; CSV schema is unchanged.')
     parser.add_argument('--preprocessing', choices=['raw','scaled'], default='scaled', help='Causal smoothing deliberately deferred.')
     parser.add_argument('--full-train', action='store_true', help='Use all 350 training targets instead of the 36-target pilot.')
-    parser.add_argument('--weight-reaching', action='store_true', help='Goal35 Noisy only: training sample weights 1 before navigation completion, 2 at/after; Validation stays unweighted.')
+    parser.add_argument('--weight-reaching', action='store_true', help='Goal35 only: training sample weights 1 before navigation completion, 2 at/after; Validation stays unweighted.')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--learning-rate', type=float, default=.001)
     parser.add_argument('--batch-size', type=int, default=1024)
@@ -343,17 +346,34 @@ def main():
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--device', choices=['cpu','cuda'], default='cpu')
     args = parser.parse_args()
+
+    # Model/training restrictions.
     if args.feature_set in ('target37','target37_mask6','target37_filtered'):
-        if any(getattr(args,k)!=v for k,v in TARGET37_CONFIG.items()) or args.weight_reaching:
-            parser.error('target37 requires the full noisy scaled CPU baseline configuration, without reaching weights')
+        expected_config = dict(TARGET37_CONFIG)
+        if args.feature_set in ('target37','target37_filtered') and args.condition=='clean':
+            expected_config['condition'] = 'clean'
+        if any(getattr(args,k)!=v for k,v in expected_config.items()) or args.weight_reaching:
+            parser.error(f'target37 requires the full {expected_config["condition"]} scaled CPU baseline configuration, without reaching weights')
+    if args.feature_set in ('goal35','history70') and args.preprocessing!='scaled':
+        parser.error('Goal35 and History70 require --preprocessing scaled')
+    if args.feature_set=='history70' and args.condition=='clean' and not args.full_train:
+        parser.error('History70 Clean requires --full-train')
+    if args.feature_set=='goal35' and args.condition=='clean':
+        if not args.full_train:
+            parser.error('Goal35 Clean requires --full-train')
+    if args.weight_reaching and args.feature_set!='goal35':
+        parser.error('--weight-reaching requires --feature-set goal35')
+    if min(args.batch_size,args.chunk_rows,args.epochs,args.patience) < 1 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
+        parser.error('Counts and learning rate must be positive')
+    if not 0 <= args.pilot_cache_mib <= 256:
+        parser.error('--pilot-cache-mib must be in 0..256 (hard safety cap)')
+
+    # Dataset/provenance restrictions.
+    if args.feature_set in ('target37','target37_mask6','target37_filtered'):
         if args.results.resolve()!=TARGET37_DATA_ROOT.resolve():
             parser.error(f'target37 requires --results {TARGET37_DATA_ROOT}')
-        local_results = RESULTS
-        prefix = f'mlp_noisy_{args.feature_set}_'
-        if args.output.resolve().parent!=(local_results/EXPERIMENTS).resolve() or not args.output.name.startswith(prefix):
-            parser.error(f'{args.feature_set} output must be a NEW {prefix}* directory directly under results/experiments')
         # Bind local data to the original Baseline33 training provenance, not itself.
-        provenance = load_json(local_results/EXPERIMENTS/'mlp_noisy_scaled_full/metrics.json')
+        provenance = load_json(RESULTS/EXPERIMENTS/f'mlp_{args.condition}_scaled_full/metrics.json')
         for name,key in (('pipeline_manifest.json','manifest_sha256'),
                          ('split_validation.json','split_validation_sha256')):
             expected = provenance.get(key)
@@ -362,15 +382,30 @@ def main():
         expected_targets = load_json(args.results/METADATA/'pipeline_manifest.json')['plan_files']['targets_500.csv']
         if sha(args.results/DATASETS/'targets_500.csv')!=expected_targets:
             raise ValueError('Local target-list identity differs from the verified manifest')
-    if args.feature_set in ('goal35','history70') and (args.condition!='noisy' or args.preprocessing!='scaled'):
-        parser.error('The controlled goal35 experiment requires --condition noisy --preprocessing scaled')
-    if args.weight_reaching and args.feature_set!='goal35':
-        parser.error('--weight-reaching requires --feature-set goal35')
-    if min(args.batch_size,args.chunk_rows,args.epochs,args.patience) < 1 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
-        parser.error('Counts and learning rate must be positive')
-    if not 0 <= args.pilot_cache_mib <= 256:
-        parser.error('--pilot-cache-mib must be in 0..256 (hard safety cap)')
+    if args.feature_set=='goal35' and args.condition=='clean' and args.results.resolve()!=RESULTS.resolve():
+        parser.error('Goal35 Clean requires the local results root')
+
+    # Output restrictions.
     output = args.output.resolve()
+    if args.feature_set in ('target37','target37_mask6','target37_filtered'):
+        if args.feature_set in ('target37','target37_filtered') and args.condition=='clean':
+            experiment = f'mlp_clean_{args.feature_set}_scaled_full'
+            expected_output = (RESULTS/EXPERIMENTS/experiment).resolve()
+            if output!=expected_output:
+                parser.error(f'Target37 Clean requires --output results/experiments/{experiment}')
+        else:
+            prefix = f'mlp_noisy_{args.feature_set}_'
+            if output.parent!=(RESULTS/EXPERIMENTS).resolve() or not args.output.name.startswith(prefix):
+                parser.error(f'{args.feature_set} output must be a NEW {prefix}* directory directly under results/experiments')
+    if args.feature_set=='goal35' and args.condition=='clean':
+        experiment = 'mlp_clean_goal35_reaching2_scaled_full' if args.weight_reaching else 'mlp_clean_goal35_scaled_full'
+        expected_output = (RESULTS/EXPERIMENTS/experiment).resolve()
+        if output!=expected_output:
+            parser.error(f'Goal35 Clean requires --output results/experiments/{experiment}')
+    if args.feature_set=='history70' and args.condition=='clean':
+        expected_output = (RESULTS/EXPERIMENTS/'mlp_clean_history70_scaled_full').resolve()
+        if output!=expected_output:
+            parser.error('History70 Clean requires --output results/experiments/mlp_clean_history70_scaled_full')
     protected = (args.results.resolve()/DATASETS).resolve()
     if (output.parent!=(args.results.resolve()/EXPERIMENTS).resolve() or output.exists() or args.output.is_symlink()
             or output == protected or protected in output.parents):
@@ -388,7 +423,11 @@ def main():
     manifest, validation, files, selected, selection, hashes = prepare(args)
     completion = completion_path = None
     if args.weight_reaching:
-        completion,completion_path = completion_steps(args.results,'noisy',selected)
+        completion,completion_path = completion_steps(args.results,args.condition,selected)
+        if args.condition=='clean':
+            expected = manifest['target335_saved_replacement']['published_files'][completion_path.name]
+            if sha(completion_path)!=expected:
+                raise ValueError('Clean completion metadata SHA256 differs from the verified manifest')
     stamps = {s: (p.stat().st_size,p.stat().st_mtime_ns) for s,p in files.items()}
     # Retain the existing chunk boundaries and untransformed float32 values.
     # No concatenation or transformed cache: shuffling/scaler fitting stay identical.
@@ -446,10 +485,11 @@ def main():
         raise ValueError('No selected training rows')
     scaler_reference = None
     if args.feature_set in ('target37_mask6','target37_filtered'):
-        reference_path = RESULTS/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt'
+        reference_path = RESULTS/EXPERIMENTS/f'mlp_{args.condition}_target37_scaled_full/best_model.pt'
         reference_hash = sha(reference_path)
         reference = torch.load(reference_path,map_location='cpu',weights_only=True)
         if (checkpoint_features(reference)[0]!='target37'
+                or reference['configuration']['condition']!=args.condition
                 or reference['outputs']!=OUTPUTS or reference['hidden_layers']!=list(HIDDEN)
                 or reference['input_sha256']!=hashes
                 or reference['manifest_sha256']!=sha(args.results/METADATA/'pipeline_manifest.json')
@@ -862,6 +902,217 @@ def cross_condition_main():
     with destination.open('x',encoding='utf-8') as handle:
         handle.write(payload)
     print('Comparison saved:',destination)
+
+
+def all_conditions_main():
+    """Evaluate the seven existing full models; never fit scalers or open Test CSVs."""
+    parser = argparse.ArgumentParser(description=all_conditions_main.__doc__)
+    parser.add_argument('--evaluate-all-conditions', action='store_true', required=True)
+    parser.add_argument('--results', type=Path, default=RESULTS)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--batch-size', type=int, default=1024)
+    parser.add_argument('--chunk-rows', type=int, default=65536)
+    args = parser.parse_args()
+    root, destination = args.results.resolve(), args.output.resolve()
+    if min(args.batch_size, args.chunk_rows) < 1:
+        parser.error('Batch and chunk sizes must be positive')
+    if (destination.parent != (root/EVALUATIONS).resolve()
+            or destination.exists() or args.output.is_symlink()):
+        parser.error('--output must be a NEW directory directly under results/evaluations')
+    snapshots = {}
+
+    def identity(path):
+        digest = sha(path)
+        if path in snapshots and snapshots[path] != digest:
+            raise RuntimeError(f'Input changed: {path}')
+        snapshots[path] = digest
+        return digest
+
+    manifest_path, split_path = root/METADATA/'pipeline_manifest.json', root/METADATA/'split_validation.json'
+    manifest_hash, split_hash = identity(manifest_path), identity(split_path)
+    manifest, split = load_json(manifest_path), load_json(split_path)
+    members = [manifest['splits'][s] for s in ('train', 'validation', 'test')]
+    sets = [set(ids) for ids in members]
+    if (manifest['schema']['inputs'] != INPUTS or manifest['schema']['outputs'] != OUTPUTS
+            or manifest['schema']['csv_columns'] != HEADER or split.get('valid') is not True
+            or [len(ids) for ids in members] != [350, 75, 75]
+            or [len(ids) for ids in sets] != [350, 75, 75]
+            or set.union(*sets) != set(range(1, 501))
+            or any(sets[i] & sets[j] for i in range(3) for j in range(i))):
+        raise ValueError('Dataset schema/split identity mismatch')
+    train_ids, val_ids = sets[:2]
+    datasets = {}
+    for condition in ('clean', 'noisy'):
+        datasets[condition] = {}
+        for name, ids in (('train', train_ids), ('validation', val_ids)):
+            relative = f'processed_data/{name}_{condition}.csv'
+            path = root/DATASETS/relative
+            expected = {k.replace('\\', '/'): v for k, v in split['output_sha256'].items()}[relative]
+            if identity(path) != expected:
+                raise ValueError(f'Dataset SHA256 mismatch: {path}')
+            with path.open(newline='') as handle:
+                if next(csv.reader(handle)) != HEADER:
+                    raise ValueError(f'Dataset schema mismatch: {path}')
+            # Audit actual counts, membership, chronology and finite values without fitting.
+            for _ in iter_chunks(path, ids, ids, split['rows'][condition][name],
+                                 args.chunk_rows, audit=True):
+                pass
+            datasets[condition][name] = dict(path=str(path), sha256=expected,
+                samples=split['rows'][condition][name], target_ids=sorted(ids))
+    specifications = [
+        ('Baseline33 Clean', 'mlp_clean_scaled_full', 'baseline33', 'clean', False),
+        ('Baseline33 Noisy', 'mlp_noisy_scaled_full', 'baseline33', 'noisy', False),
+        ('Goal35', 'mlp_noisy_goal35_scaled_full', 'goal35', 'noisy', False),
+        ('Goal35 Reaching2', 'mlp_noisy_goal35_reaching2_scaled_full', 'goal35', 'noisy', True),
+        ('History70', 'mlp_noisy_history70_scaled_full', 'history70', 'noisy', False),
+        ('Target37', 'mlp_noisy_target37_scaled_full', 'target37', 'noisy', False),
+        ('Target37 Filtered', 'mlp_noisy_target37_filtered_scaled_full', 'target37_filtered', 'noisy', False),
+    ]
+    warning = ('Offline results do not establish closed-loop control success. '
+        'Compare physical-unit metrics within outputs or wheel/arm groups; each model\'s '
+        'scaled MSE uses its own training output scaler and is not a common-scale score. '
+        'Clean/noisy share validation target IDs but have different trajectory lengths and rows; '
+        'condition differences are not paired row-wise robustness estimates.')
+    report = dict(mode='evaluate_all_conditions', test_accessed=False, device='cpu',
+        manifest_sha256=manifest_hash, split_validation_sha256=split_hash,
+        evaluation_source_sha256={str(p): identity(p) for p in
+            (Path(__file__).resolve(), Path(__file__).resolve().parent/'mlp/features.py',
+             Path(__file__).resolve().parent/'mlp/reporting.py',
+             Path(__file__).resolve().parent/'mlp/training.py')},
+        datasets=datasets, validation_row_difference_clean_minus_noisy=
+            datasets['clean']['validation']['samples']-datasets['noisy']['validation']['samples'],
+        warning=warning, models={}, results={})
+    evaluate.batch_size = args.batch_size
+    for label, directory, feature_set, condition, weighted in specifications:
+        model_dir = root/EXPERIMENTS/directory
+        checkpoint_path, metrics_path = model_dir/'best_model.pt', model_dir/'metrics.json'
+        checkpoint_hash, metrics_hash = identity(checkpoint_path), identity(metrics_path)
+        ck = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+        saved = load_json(metrics_path)
+        for key, value in ck.items():
+            # History70 stores its policy here; metrics uses history for the learning curve.
+            # checkpoint_features() below independently verifies the checkpoint policy.
+            if key == 'history' and feature_set == 'history70':
+                continue
+            if key != 'model_state_dict' and (key not in saved or saved[key] != value):
+                raise ValueError(f'Checkpoint/metrics mismatch: {label}/{key}')
+        actual_features, names = checkpoint_features(ck)
+        config = ck['configuration']
+        count = datasets[condition]['train']['samples']
+        if (actual_features != feature_set or config.get('feature_set', 'baseline33') != feature_set
+                or config['condition'] != condition or config.get('full_train') is not True
+                or bool(config.get('weight_reaching', False)) != weighted
+                or ck['outputs'] != OUTPUTS or ck['hidden_layers'] != list(HIDDEN)
+                or config['preprocessing'] != 'scaled' or ck['preprocessing']['kind'] != 'scaled'
+                or ck['manifest_sha256'] != manifest_hash or ck['split_validation_sha256'] != split_hash
+                or ck.get('test_accessed') is not False or ck['selected_target_ids'] != sorted(train_ids)
+                or ck['selected_training_samples'] != count or saved['training']['samples'] != count
+                or saved['validation']['samples'] != datasets[condition]['validation']['samples']
+                or ck['input_sha256'] != {s: datasets[condition][s]['sha256'] for s in ('train', 'validation')}
+                or not math.isclose(saved['validation']['scaled_mse'], ck['best_validation_mse'],
+                                    rel_tol=1e-6, abs_tol=1e-10)):
+            raise ValueError(f'Unexpected checkpoint provenance: {label}')
+        weighting = ck.get('training_weighting')
+        if weighted:
+            _, metadata_path = completion_steps(root, condition, train_ids)
+            if (not isinstance(weighting, dict) or weighting.get('navigation') != 1.
+                    or weighting.get('reaching') != 2.
+                    or identity(metadata_path) != weighting.get('metadata_sha256')):
+                raise ValueError('Reaching2 training-weight provenance mismatch')
+        elif weighting is not None:
+            raise ValueError(f'Unexpected training weighting: {label}')
+        if feature_set == 'target37_filtered':
+            reference = root/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt'
+            original = report['models']['Target37']['metadata']['preprocessing']
+            if (identity(reference) != ck['scaler_reference']['checkpoint_sha256']
+                    or ck['scaler_reference']['preprocessing'] != original
+                    or ck['preprocessing']['y_scaler'] != original['y_scaler']):
+                raise ValueError('Filtered Target37 reference checkpoint mismatch')
+        scalers = []
+        for key, width in (('x_scaler', len(names)), ('y_scaler', len(OUTPUTS))):
+            info = ck['preprocessing'][key]
+            arrays = [np.asarray(info[k], dtype=np.float64) for k in ('mean', 'scale', 'variance')]
+            if (info['samples_seen'] != count
+                    or any(a.shape != (width,) or not np.isfinite(a).all() for a in arrays)
+                    or np.any(arrays[1] <= 0) or np.any(arrays[2] < 0)):
+                raise ValueError(f'Invalid saved training scaler: {label}/{key}')
+            scaler = StandardScaler()
+            scaler.mean_, scaler.scale_, scaler.var_ = arrays
+            scaler.n_features_in_, scaler.n_samples_seen_ = width, count
+            scalers.append(scaler)
+        model = MLP(len(names))
+        model.load_state_dict(ck['model_state_dict'], strict=True)
+        if any(not torch.isfinite(p).all().item() for p in model.parameters()):
+            raise ValueError(f'Nonfinite model parameters: {label}')
+        report['models'][label] = dict(checkpoint=str(checkpoint_path), checkpoint_sha256=checkpoint_hash,
+            metrics=str(metrics_path), metrics_sha256=metrics_hash,
+            metadata={k: v for k, v in ck.items() if k != 'model_state_dict'})
+        report['results'][label] = {}
+        for validation_condition in ('clean', 'noisy'):
+            data = datasets[validation_condition]['validation']
+            print(f'Evaluating {label}: {validation_condition}, n={data["samples"]}', flush=True)
+            stream = iter_chunks(Path(data['path']), val_ids, val_ids, data['samples'],
+                args.chunk_rows, audit=True, feature_set=feature_set)
+            metrics = evaluate(model, stream, *scalers, torch.device('cpu'), feature_set)
+            if metrics['samples'] != data['samples']:
+                raise ValueError('Evaluation sample count mismatch')
+            report['results'][label][validation_condition] = metrics
+    # Refuse to publish results if any source, dataset or checkpoint changed during the run.
+    for path, digest in snapshots.items():
+        if sha(path) != digest:
+            raise RuntimeError(f'Input changed during evaluation: {path}')
+    payload = json.dumps(report, indent=2, allow_nan=False)+'\n'
+    destination.mkdir(parents=True, exist_ok=False)
+    with (destination/'metrics.json').open('x', encoding='utf-8') as handle:
+        handle.write(payload)
+    with (destination/'comparison.csv').open('x', newline='', encoding='utf-8') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(['model', 'validation_condition', 'samples', 'scope', 'output_or_group',
+                         'unit', 'mae', 'rmse', 'r2'])
+        for label, conditions in report['results'].items():
+            for condition, metrics in conditions.items():
+                for scope in ('outputs', 'groups'):
+                    keys = ('mae', 'rmse', 'r2') if scope == 'outputs' else ('mean_mae', 'pooled_rmse', 'macro_r2')
+                    for name, values in metrics[scope].items():
+                        writer.writerow([label, condition, metrics['samples'], scope, name,
+                                         values['unit'], *[values[k] for k in keys]])
+    # Direct Figure/Agg use avoids pyplot state; contain matplotlib's cache in OS temp.
+    previous_cache = os.environ.get('MPLCONFIGDIR')
+    cache_root = Path(os.environ.get('LOCALAPPDATA', str(Path.home())))/'Temp' if os.name == 'nt' else Path('/tmp')
+    with tempfile.TemporaryDirectory(prefix='comp0245-mlp-mpl-', dir=cache_root) as cache:
+        os.environ['MPLCONFIGDIR'] = cache
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            for scope, names in (('outputs', OUTPUTS), ('groups', ['wheels', 'arm'])):
+                for metric, group_metric in (('mae', 'mean_mae'), ('rmse', 'pooled_rmse'), ('r2', 'macro_r2')):
+                    fig = Figure(figsize=(15, 3*math.ceil(len(names)/3)))
+                    FigureCanvasAgg(fig)
+                    axes = list(fig.subplots(math.ceil(len(names)/3), 3, squeeze=False).flat)
+                    for ax, name in zip(axes, names):
+                        for offset, condition in ((-.2, 'clean'), (.2, 'noisy')):
+                            values = [report['results'][label][condition][scope][name][
+                                metric if scope == 'outputs' else group_metric] for label in report['results']]
+                            ax.bar(np.arange(7)+offset, [np.nan if v is None else v for v in values],
+                                width=.4, label=f'{condition} (n={datasets[condition]["validation"]["samples"]:,})')
+                        unit = 'rad/s' if name in OUTPUTS[:4] or name == 'wheels' else 'Nm'
+                        ax.set(title=name, ylabel=(metric if scope == 'outputs' else group_metric)
+                            + ('' if metric == 'r2' else f' ({unit})'))
+                        ax.set_xticks(np.arange(7), list(report['results']), rotation=65, ha='right', fontsize=7)
+                        ax.legend(fontsize=7)
+                    for ax in axes[len(names):]:
+                        ax.set_visible(False)
+                    fig.suptitle('Validation only: '+scope+' '+metric+'; offline results do not prove closed-loop success')
+                    fig.tight_layout()
+                    fig.savefig(destination/f'{scope}_{metric}.png', dpi=150)
+                    fig.clear()
+        finally:
+            if previous_cache is None:
+                os.environ.pop('MPLCONFIGDIR', None)
+            else:
+                os.environ['MPLCONFIGDIR'] = previous_cache
+    print(warning)
+    print('Comparison saved:', destination)
 
 
 # 7. Closed-loop simulation: imports and state are isolated from training.
@@ -2302,7 +2553,9 @@ def verify_history70_main():
 
 
 if __name__ == '__main__':
-    if '--collect-dagger' in sys.argv:
+    if '--evaluate-all-conditions' in sys.argv:
+        all_conditions_main()
+    elif '--collect-dagger' in sys.argv:
         collect_dagger_main()
     elif '--qualify-perturbed-starts' in sys.argv:
         qualification_main()
