@@ -2553,7 +2553,17 @@ def verify_history70_main():
 
 
 if __name__ == '__main__':
-    if '--evaluate-all-conditions' in sys.argv:
+    if '--refresh-saved-comparison' in sys.argv:
+        parser = argparse.ArgumentParser(description='Refresh comparisons from saved experiment JSON only.')
+        parser.add_argument('--refresh-saved-comparison', action='store_true', required=True)
+        parser.add_argument('--results', type=Path, default=RESULTS)
+        args = parser.parse_args()
+        if __package__:
+            from .mlp.reporting import refresh_saved_comparison
+        else:
+            from mlp.reporting import refresh_saved_comparison
+        refresh_saved_comparison(args.results)
+    elif '--evaluate-all-conditions' in sys.argv:
         all_conditions_main()
     elif '--collect-dagger' in sys.argv:
         collect_dagger_main()

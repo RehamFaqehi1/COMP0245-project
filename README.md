@@ -12,6 +12,57 @@ Baseline33 uses 33 inputs: base pose, arm positions and velocities, target posit
 and derived base/arm motion features. All models predict **four wheel velocities
 (rad/s) and seven arm torques (Nm)**.
 
+## Experimental Results — 12 Trained MLP Models
+
+Six MLP variants—Baseline33, Goal35, Goal35 Reaching2, History70, Target37 and
+Target37 Filtered—have each been trained and validated separately on **Clean and
+Noisy expert datasets**, giving **12 completed models**. These variants share the
+hidden-layer architecture; they differ in input features, temporal processing or
+training weights. Reaching2 changes the training loss, not the network structure.
+
+The assessor can inspect the [main comparison table](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/summary.csv)
+and [per-output MAE, RMSE and R² for all 11 outputs](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/per_output.csv).
+The [comparison report](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/comparison.json)
+records included/skipped experiments, compatibility groups and source JSON hashes.
+
+| Saved figures | Clean → Clean | Noisy → Noisy |
+|---|---|---|
+| Wheel metrics (rad/s) | [Clean wheels](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/clean_a79c985218b2_wheels.png) | [Noisy wheels](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/noisy_35d59133d715_wheels.png) |
+| Arm metrics (Nm) | [Clean arm](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/clean_a79c985218b2_arm.png) | [Noisy arm](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/noisy_35d59133d715_arm.png) |
+| Validation MSE and Training/Validation curves | [Clean diagnostics](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/clean_a79c985218b2_diagnostics.png) | [Noisy diagnostics](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/noisy_35d59133d715_diagnostics.png) |
+
+| Summary metric | Interpretation |
+|---|---|
+| Training Samples | Number of Training timesteps used to fit the model and scalers. |
+| Validation Samples | Number of held-out Validation timesteps; compare within the same dataset identity and sample count. |
+| Validation MSE | Mean squared error in the model's standardized output space; model-specific, not a common-scale ranking. |
+| Wheel/arm MAE | Mean absolute error, averaged over the four wheel or seven arm outputs; lower is better. |
+| Wheel/arm RMSE | Root mean squared error pooled within each group; lower is better and large errors receive more weight. |
+| Wheel/arm R² | Mean coefficient of determination over outputs with defined R²; higher is better, 1 is perfect, and negative values are possible. The table records how many outputs contribute. |
+| Best Epoch | Epoch selected by the lowest unweighted Validation MSE, including for Reaching2 training. |
+
+**Clean → Clean and Noisy → Noisy are separate comparisons.** Wheel errors use
+rad/s and arm errors use Nm; they are not pooled across units. Model-specific
+scaled MSE and learning curves use independent scales and must not be treated as
+a common-scale ranking. **Offline accuracy does not establish closed-loop success.**
+
+To refresh from saved reports, run from the project root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml python ./final/robotnik_arm_task/train_mlp.py --refresh-saved-comparison
+```
+
+The reporter automatically discovers experiments under `results/experiments/`
+and includes completed runs with compatible saved metrics and metadata; no model
+list needs editing. Incompatible or incomplete runs are reported with reasons.
+It reads saved JSON only, without training, prediction, simulation, checkpoint
+loading or dataset/Test access. Refresh replaces only owned comparison artifacts
+in `results/evaluations/saved_experiment_comparison/`; unrelated or altered files
+cause refusal. Original experiment files remain unchanged. Figure filenames
+include a compatibility-group identifier and may change if dataset identity changes.
+Future ACT or Diffusion Policy experiments require compatible reporting metadata;
+they are not among the 12 trained MLP models documented here.
+
 ## Project structure
 
 ```text
@@ -34,7 +85,7 @@ COMP0245-project/
 │   ├── models  -> ../../RoboEnv/models
 │   └── results/
 │       ├── datasets/               # Targets, Expert exports and processed splits
-│       ├── experiments/            # Seven full model bundles
+│       ├── experiments/            # Twelve full MLP model bundles
 │       ├── evaluations/            # New runs; existing results in historical/
 │       ├── figures/                # Shared figures and data-quality reports
 │       └── metadata/               # Manifest, split record and collection state
@@ -85,11 +136,11 @@ Saved full-run directories below are under `final/robotnik_arm_task/results/expe
 | Experiment | Inputs / CLI selector | Difference | Saved full run |
 |---|---|---|---|
 | Baseline33 | 33 / `baseline33` | Original ordered observations; clean and noisy models | `mlp_clean_scaled_full/`, `mlp_noisy_scaled_full/` |
-| Goal35 | 35 / `goal35` | Baseline plus distance and signed heading error to the navigation goal | `mlp_noisy_goal35_scaled_full/` |
-| Goal35 Reaching2 | 35 / `goal35 --weight-reaching` | Training weight 2 after recorded navigation completion, otherwise 1; validation remains unweighted | `mlp_noisy_goal35_reaching2_scaled_full/` |
-| History70 | 70 / `history70` | Current Goal35 plus its 100 ms history, padded with the first observation at startup | `mlp_noisy_history70_scaled_full/` |
-| Target37 | 37 / `target37` | Baseline plus target-relative body X/Y, planar distance and wrapped heading error | `mlp_noisy_target37_scaled_full/` |
-| Target37 Filtered | 37 / `target37_filtered` | Causal two-stage pose smoothing, then derivatives for six base-motion slots; 20 ms per stage | `mlp_noisy_target37_filtered_scaled_full/` |
+| Goal35 | 35 / `goal35` | Baseline plus distance and signed heading error to the navigation goal | `mlp_clean_goal35_scaled_full/`, `mlp_noisy_goal35_scaled_full/` |
+| Goal35 Reaching2 | 35 / `goal35 --weight-reaching` | Training weight 2 after recorded navigation completion, otherwise 1; validation remains unweighted | `mlp_clean_goal35_reaching2_scaled_full/`, `mlp_noisy_goal35_reaching2_scaled_full/` |
+| History70 | 70 / `history70` | Current Goal35 plus its 100 ms history, padded with the first observation at startup | `mlp_clean_history70_scaled_full/`, `mlp_noisy_history70_scaled_full/` |
+| Target37 | 37 / `target37` | Baseline plus target-relative body X/Y, planar distance and wrapped heading error | `mlp_clean_target37_scaled_full/`, `mlp_noisy_target37_scaled_full/` |
+| Target37 Filtered | 37 / `target37_filtered` | Causal two-stage pose smoothing, then derivatives for six base-motion slots; 20 ms per stage | `mlp_clean_target37_filtered_scaled_full/`, `mlp_noisy_target37_filtered_scaled_full/` |
 | Target37 Mask6 | 37 / `target37_mask6` | Six standardized base-motion slots set to zero after scaling | **Implemented, not trained; no checkpoint found** |
 
 The masked/filtered slots are `base_vx`, `base_vy`, `base_yaw_rate`, `base_ax`,
@@ -99,7 +150,8 @@ History and filter state reset between trajectories and continue across CSV chun
 Historical `mlp_noisy_goal35_scaled_pilot/`, `mlp_noisy_history70_scaled_pilot/`
 and `mlp_clean_scaled_smoke/` bundles move to
 `/home/amrfg/COMP0245-archive/results/`. Pilots use 36 selected training targets;
-they are not full-training comparisons. All ten bundles are preserved.
+they are not full-training comparisons. All historical bundles are preserved
+separately from the 12 completed full-training models.
 
 ## Existing results
 
@@ -131,7 +183,8 @@ do not pool these as one matched benchmark.
 
 `results/evaluations/historical/mlp_cross_condition_comparison.json` compares the two Baseline33 models on
 clean/noisy validation observations. It is **not an all-experiment comparison**.
-There is currently no unified comparison CLI.
+The unified `--refresh-saved-comparison` CLI compares saved same-condition results
+across all compatible completed experiments; see the results section above.
 
 Existing plots move intact to `results/figures/dataset_historical/`.
 The manifest identifies plots and `results/metadata/feature_distributions_noisy.csv`
@@ -193,7 +246,9 @@ Use `m["training"]` instead to display saved training metrics.
 
 ### E. Available model comparison
 
-Print a table from the saved Baseline33 cross-condition comparison:
+For the 12-model same-condition comparison, open the linked summary and figures
+in the results section above. The following existing command prints the historical
+Baseline33 cross-condition comparison:
 
 ```bash
 "$py" -B - "$results/evaluations/historical/mlp_cross_condition_comparison.json" <<'PY'
@@ -287,13 +342,16 @@ each chunk using seed + epoch. Training stops after five consecutive epochs
 without validation improvement.
 
 Use the experiment selector in the table for other models; Reaching2 adds
-`--weight-reaching` to `--feature-set goal35`. Baseline33 also supports
-`--condition clean`. Every training output must be a new directory directly under
+`--weight-reaching` to `--feature-set goal35`. All six trained variants support
+Clean and Noisy training. Every training output must be a new directory directly under
 `results/experiments/`; its checkpoint, metrics, configuration and learning curve
 stay together.
-Omitting `--full-train` selects a pilot for Baseline33/Goal35/History70.
-Target37-family runs require the full noisy, scaled CPU configuration shown above
-and an output prefix `mlp_noisy_<feature-set>_` under `results/experiments/`.
+Omitting `--full-train` selects a pilot for Baseline33, or for Noisy Goal35/History70;
+Clean Goal35/History70 require full training. Target37 and Target37 Filtered require
+the full scaled CPU configuration shown above, with the selected condition.
+Their Noisy runs require an output prefix `mlp_noisy_<feature-set>_`;
+Clean Goal35/History70/Target37 variants require their exact directories listed
+in the experiment table. Target37 Mask6 remains Noisy-only and is not a trained model.
 The CLI rejects existing output directories.
 
 ## Reproducibility and provenance
@@ -330,7 +388,9 @@ conditions and evaluation protocols.
 
 ## PyBullet GUI — Demo Commands
 
-This section demonstrates the Original Expert and seven trained MLP models using PyBullet simulation.
+This section demonstrates the Original Expert and seven of the 12 trained MLP models
+using PyBullet simulation. These commands retain the existing checkpoint selections;
+the additional Clean variants in the offline comparison are not selected here.
 
 All commands run from the project root in WSL Ubuntu:
 
