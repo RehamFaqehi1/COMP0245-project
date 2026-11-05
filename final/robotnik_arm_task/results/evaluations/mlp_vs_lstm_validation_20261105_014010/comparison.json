@@ -1,0 +1,628 @@
+{
+  "mode": "offline_same_observation_validation_comparison",
+  "test_split_accessed": false,
+  "rows_evaluated": 616860,
+  "validation_target_ids": [
+    3,
+    9,
+    10,
+    28,
+    30,
+    39,
+    41,
+    46,
+    48,
+    50,
+    53,
+    58,
+    61,
+    93,
+    94,
+    108,
+    109,
+    126,
+    131,
+    134,
+    135,
+    136,
+    145,
+    149,
+    150,
+    173,
+    183,
+    201,
+    206,
+    209,
+    212,
+    213,
+    217,
+    238,
+    240,
+    246,
+    254,
+    269,
+    271,
+    274,
+    278,
+    294,
+    303,
+    306,
+    309,
+    312,
+    318,
+    323,
+    327,
+    332,
+    347,
+    349,
+    379,
+    386,
+    398,
+    400,
+    404,
+    409,
+    412,
+    418,
+    422,
+    425,
+    430,
+    432,
+    436,
+    437,
+    442,
+    447,
+    455,
+    459,
+    465,
+    467,
+    481,
+    491,
+    495
+  ],
+  "device": "cuda",
+  "dataset": {
+    "path": "C:\\Users\\abiva\\COMP0245-project\\final\\robotnik_arm_task\\results\\datasets\\processed_data\\validation_noisy.csv",
+    "sha256": "0f965fcccf82067e61f2773c03f7d949aec24945d4b5bc6f7e7a22591536565e"
+  },
+  "checkpoints": {
+    "mlp": {
+      "path": "C:\\Users\\abiva\\COMP0245-project\\final\\robotnik_arm_task\\results\\experiments\\mlp_noisy_target37_scaled_full\\best_model.pt",
+      "sha256": "654416d795318994c4cce8c01c5fa6ab968b3fe78634ddb5f6410405aa11eea1"
+    },
+    "lstm": {
+      "path": "C:\\Users\\abiva\\COMP0245-project\\final\\robotnik_arm_task\\results\\experiments\\lstm_noisy_target37_onestep_mlpstyle\\best_model_compatible.pt",
+      "sha256": "dcde04c401aa0b12d4c8287cf56cf3b3157ed16552f6a5147c304ff1f3f05e55",
+      "sequence_length": 1
+    },
+    "checkpoint_test_access_metadata": {
+      "mlp": false,
+      "lstm": false
+    }
+  },
+  "scaler_comparison": {
+    "x_mean_max_abs_difference": 4.440892098500626e-16,
+    "x_scale_max_abs_difference": 2.2737367544323206e-12,
+    "y_mean_max_abs_difference": 7.105427357601002e-15,
+    "y_scale_max_abs_difference": 1.3322676295501878e-15,
+    "input_scalers_identical_to_1e-10": true,
+    "output_scalers_identical_to_1e-10": true
+  },
+  "mlp_vs_expert": {
+    "samples": 616860,
+    "overall_mae_all_outputs_mixed_units": 0.13420164702672224,
+    "overall_rmse_all_outputs_mixed_units": 0.42240313365277055,
+    "wheel_mae_rad_per_s": 0.06026159616590392,
+    "wheel_rmse_rad_per_s": 0.1438130123581352,
+    "arm_torque_mae_nm": 0.1764531046614756,
+    "arm_torque_rmse_nm": 0.518230471401397,
+    "per_output": {
+      "wheel_cmd1": {
+        "mae": 0.059595610147818855,
+        "rmse": 0.14496693940306166,
+        "r2": 0.9914836669287128,
+        "expert_mean": 0.6136246201404664,
+        "expert_std": 1.570878699589889,
+        "prediction_mean": 0.5959068448158447,
+        "prediction_std": 1.5491684430589336,
+        "prediction_min": -3.235005068074175,
+        "prediction_max": 3.233040325449271,
+        "worst_example": {
+          "model": "MLP",
+          "output": "wheel_cmd1",
+          "absolute_error": 4.644282917128853,
+          "target_id": 206,
+          "time_s": 4.249,
+          "expert_value": -3.0,
+          "predicted_value": 1.6442829171288538
+        }
+      },
+      "wheel_cmd2": {
+        "mae": 0.060927601527869045,
+        "rmse": 0.14264975942696095,
+        "r2": 0.9919744142010991,
+        "expert_mean": 0.5427609330304585,
+        "expert_std": 1.5923285156100169,
+        "prediction_mean": 0.5262448037963527,
+        "prediction_std": 1.5620776036637862,
+        "prediction_min": -3.229856844984338,
+        "prediction_max": 3.1711467167445435,
+        "worst_example": {
+          "model": "MLP",
+          "output": "wheel_cmd2",
+          "absolute_error": 4.531019411388693,
+          "target_id": 491,
+          "time_s": 4.8,
+          "expert_value": -3.0,
+          "predicted_value": 1.5310194113886928
+        }
+      },
+      "wheel_cmd3": {
+        "mae": 0.06092760949191486,
+        "rmse": 0.14264976764860074,
+        "r2": 0.9919744132759875,
+        "expert_mean": 0.5427609330304585,
+        "expert_std": 1.5923285156100169,
+        "prediction_mean": 0.5262448533108145,
+        "prediction_std": 1.5620775425886255,
+        "prediction_min": -3.229856844984338,
+        "prediction_max": 3.171146910344748,
+        "worst_example": {
+          "model": "MLP",
+          "output": "wheel_cmd3",
+          "absolute_error": 4.531019411388693,
+          "target_id": 491,
+          "time_s": 4.8,
+          "expert_value": -3.0,
+          "predicted_value": 1.5310194113886928
+        }
+      },
+      "wheel_cmd4": {
+        "mae": 0.05959556349601294,
+        "rmse": 0.14496691518903207,
+        "r2": 0.9914836697737025,
+        "expert_mean": 0.6136246201404664,
+        "expert_std": 1.570878699589889,
+        "prediction_mean": 0.5959069360959379,
+        "prediction_std": 1.5491685407158424,
+        "prediction_min": -3.235005068074175,
+        "prediction_max": 3.233040520111717,
+        "worst_example": {
+          "model": "MLP",
+          "output": "wheel_cmd4",
+          "absolute_error": 4.6442831117912995,
+          "target_id": 206,
+          "time_s": 4.249,
+          "expert_value": -3.0,
+          "predicted_value": 1.6442831117913
+        }
+      },
+      "arm_torque1": {
+        "mae": 0.22374107198188947,
+        "rmse": 0.6725903002024837,
+        "r2": 0.932929055158872,
+        "expert_mean": 0.0009649707497052731,
+        "expert_std": 2.5970683980478535,
+        "prediction_mean": -0.07401700802693056,
+        "prediction_std": 2.493069503473113,
+        "prediction_min": -20.060321059984865,
+        "prediction_max": 19.67623908551802,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque1",
+          "absolute_error": 25.98058626113642,
+          "target_id": 379,
+          "time_s": 2.831,
+          "expert_value": -28.509632110595703,
+          "predicted_value": -2.5290458494592825
+        }
+      },
+      "arm_torque2": {
+        "mae": 0.19043210468749108,
+        "rmse": 0.35632957601438486,
+        "r2": 0.9526716635496238,
+        "expert_mean": 17.85771001493126,
+        "expert_std": 1.6379145891761573,
+        "prediction_mean": 17.866582900411533,
+        "prediction_std": 1.616442243272822,
+        "prediction_min": 1.6674495439404602,
+        "prediction_max": 32.194222573106956,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque2",
+          "absolute_error": 18.83987086018686,
+          "target_id": 432,
+          "time_s": 5.0200000000000005,
+          "expert_value": -0.5926570892333984,
+          "predicted_value": 18.24721377095346
+        }
+      },
+      "arm_torque3": {
+        "mae": 0.19003406894540825,
+        "rmse": 0.8150598088371407,
+        "r2": 0.8123118750256451,
+        "expert_mean": 0.42351441057267264,
+        "expert_std": 1.881356423095355,
+        "prediction_mean": 0.3796915596805861,
+        "prediction_std": 1.6384474154343842,
+        "prediction_min": -34.496118617868134,
+        "prediction_max": 27.87478522912208,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque3",
+          "absolute_error": 30.118351688898773,
+          "target_id": 108,
+          "time_s": 4.938,
+          "expert_value": -29.799896240234375,
+          "predicted_value": 0.31845544866439734
+        }
+      },
+      "arm_torque4": {
+        "mae": 0.1886557817217338,
+        "rmse": 0.29194811463710957,
+        "r2": 0.982368922058613,
+        "expert_mean": -0.5189552338116166,
+        "expert_std": 2.198701346213162,
+        "prediction_mean": -0.5715820936519301,
+        "prediction_std": 2.1895609722810105,
+        "prediction_min": -31.21321246389813,
+        "prediction_max": 14.578138497632127,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque4",
+          "absolute_error": 22.853627828686253,
+          "target_id": 432,
+          "time_s": 5.0200000000000005,
+          "expert_value": -23.52185821533203,
+          "predicted_value": -0.6682303866457786
+        }
+      },
+      "arm_torque5": {
+        "mae": 0.1635763168696319,
+        "rmse": 0.6245693493754503,
+        "r2": 0.8551344795178449,
+        "expert_mean": -0.028467651761605286,
+        "expert_std": 1.6409605936252982,
+        "prediction_mean": 0.00229529694581244,
+        "prediction_std": 1.5240361221859833,
+        "prediction_min": -19.4415494636199,
+        "prediction_max": 16.201028011624437,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque5",
+          "absolute_error": 30.222727542469208,
+          "target_id": 28,
+          "time_s": 5.2780000000000005,
+          "expert_value": 23.495508193969727,
+          "predicted_value": -6.7272193484994816
+        }
+      },
+      "arm_torque6": {
+        "mae": 0.17818486479081477,
+        "rmse": 0.3809247533439774,
+        "r2": 0.9732235325411629,
+        "expert_mean": 2.8300373497883107,
+        "expert_std": 2.3278905342728446,
+        "prediction_mean": 2.761022951385939,
+        "prediction_std": 2.3401301810059145,
+        "prediction_min": -33.40691734114045,
+        "prediction_max": 27.681553044867716,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque6",
+          "absolute_error": 28.062302369052283,
+          "target_id": 269,
+          "time_s": 1.5190000000000001,
+          "expert_value": 30.0,
+          "predicted_value": 1.9376976309477172
+        }
+      },
+      "arm_torque7": {
+        "mae": 0.10054752363335977,
+        "rmse": 0.12587508983948356,
+        "r2": 0.9888913870771884,
+        "expert_mean": 0.00925161373127323,
+        "expert_std": 1.1942902215443698,
+        "prediction_mean": 0.02981283046305582,
+        "prediction_std": 1.1991241181557761,
+        "prediction_min": -27.44838685378238,
+        "prediction_max": 29.586298422124813,
+        "worst_example": {
+          "model": "MLP",
+          "output": "arm_torque7",
+          "absolute_error": 1.3391370890820342,
+          "target_id": 53,
+          "time_s": 8.854000000000001,
+          "expert_value": 1.5948375463485718,
+          "predicted_value": 2.933974635430606
+        }
+      }
+    }
+  },
+  "lstm_vs_expert": {
+    "samples": 616860,
+    "overall_mae_all_outputs_mixed_units": 0.1768811090802005,
+    "overall_rmse_all_outputs_mixed_units": 0.4548919632642429,
+    "wheel_mae_rad_per_s": 0.08956863038984439,
+    "wheel_rmse_rad_per_s": 0.14503257650853768,
+    "arm_torque_mae_nm": 0.22677395404611822,
+    "arm_torque_rmse_nm": 0.5595988215641057,
+    "per_output": {
+      "wheel_cmd1": {
+        "mae": 0.08021703030306442,
+        "rmse": 0.13715906010825404,
+        "r2": 0.9923763368465109,
+        "expert_mean": 0.6136246201404664,
+        "expert_std": 1.570878699589889,
+        "prediction_mean": 0.6456217523248992,
+        "prediction_std": 1.5427185356696513,
+        "prediction_min": -3.200594198175888,
+        "prediction_max": 3.1179553034068768,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "wheel_cmd1",
+          "absolute_error": 4.71854187103493,
+          "target_id": 109,
+          "time_s": 3.782,
+          "expert_value": -3.0,
+          "predicted_value": 1.71854187103493
+        }
+      },
+      "wheel_cmd2": {
+        "mae": 0.09892024215435381,
+        "rmse": 0.15250013624952843,
+        "r2": 0.9908277661598659,
+        "expert_mean": 0.5427609330304585,
+        "expert_std": 1.5923285156100169,
+        "prediction_mean": 0.49509733424735713,
+        "prediction_std": 1.52808935443475,
+        "prediction_min": -3.103075040657809,
+        "prediction_max": 3.1666728096185106,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "wheel_cmd2",
+          "absolute_error": 4.552872228073014,
+          "target_id": 491,
+          "time_s": 4.8,
+          "expert_value": -3.0,
+          "predicted_value": 1.5528722280730136
+        }
+      },
+      "wheel_cmd3": {
+        "mae": 0.09892022349315485,
+        "rmse": 0.15250011913836725,
+        "r2": 0.9908277682181929,
+        "expert_mean": 0.5427609330304585,
+        "expert_std": 1.5923285156100169,
+        "prediction_mean": 0.4950973314869472,
+        "prediction_std": 1.5280893947077103,
+        "prediction_min": -3.1030746534574,
+        "prediction_max": 3.1666728096185106,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "wheel_cmd3",
+          "absolute_error": 4.552872228073014,
+          "target_id": 491,
+          "time_s": 4.8,
+          "expert_value": -3.0,
+          "predicted_value": 1.5528722280730136
+        }
+      },
+      "wheel_cmd4": {
+        "mae": 0.08021702560880449,
+        "rmse": 0.1371590585112728,
+        "r2": 0.9923763370240398,
+        "expert_mean": 0.6136246201404664,
+        "expert_std": 1.570878699589889,
+        "prediction_mean": 0.6456217464386925,
+        "prediction_std": 1.5427185283040823,
+        "prediction_min": -3.200594198175888,
+        "prediction_max": 3.117955498069323,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "wheel_cmd4",
+          "absolute_error": 4.718541773703707,
+          "target_id": 109,
+          "time_s": 3.782,
+          "expert_value": -3.0,
+          "predicted_value": 1.718541773703707
+        }
+      },
+      "arm_torque1": {
+        "mae": 0.2915842762527235,
+        "rmse": 0.7302910281530678,
+        "r2": 0.9209275573000387,
+        "expert_mean": 0.0009649707497052731,
+        "expert_std": 2.5970683980478535,
+        "prediction_mean": 0.05299785366432757,
+        "prediction_std": 2.4033344735572624,
+        "prediction_min": -15.772651372133414,
+        "prediction_max": 18.237752616408322,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque1",
+          "absolute_error": 25.9630704733773,
+          "target_id": 379,
+          "time_s": 2.831,
+          "expert_value": -28.509632110595703,
+          "predicted_value": -2.546561637218402
+        }
+      },
+      "arm_torque2": {
+        "mae": 0.2431286021883436,
+        "rmse": 0.4035767416898278,
+        "r2": 0.9392886686255199,
+        "expert_mean": 17.85771001493126,
+        "expert_std": 1.6379145891761573,
+        "prediction_mean": 17.806128416008494,
+        "prediction_std": 1.537429305823888,
+        "prediction_min": 2.9106349758159134,
+        "prediction_max": 30.885622386883497,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque2",
+          "absolute_error": 18.79992305011398,
+          "target_id": 432,
+          "time_s": 5.0200000000000005,
+          "expert_value": -0.5926570892333984,
+          "predicted_value": 18.20726596088058
+        }
+      },
+      "arm_torque3": {
+        "mae": 0.25299041307991016,
+        "rmse": 0.8430527003878066,
+        "r2": 0.799198345559861,
+        "expert_mean": 0.42351441057267264,
+        "expert_std": 1.881356423095355,
+        "prediction_mean": 0.36993685442217783,
+        "prediction_std": 1.5999499724294497,
+        "prediction_min": -24.88734883631778,
+        "prediction_max": 30.01202222272488,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque3",
+          "absolute_error": 30.337923304349435,
+          "target_id": 455,
+          "time_s": 6.474,
+          "expert_value": 28.395606994628906,
+          "predicted_value": -1.9423163097205267
+        }
+      },
+      "arm_torque4": {
+        "mae": 0.24707019968222207,
+        "rmse": 0.36866574758797965,
+        "r2": 0.9718853232546678,
+        "expert_mean": -0.5189552338116166,
+        "expert_std": 2.198701346213162,
+        "prediction_mean": -0.5184216524648868,
+        "prediction_std": 2.060679518858283,
+        "prediction_min": -29.629849668512897,
+        "prediction_max": 12.54094272088863,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque4",
+          "absolute_error": 23.183210645319868,
+          "target_id": 432,
+          "time_s": 5.0200000000000005,
+          "expert_value": -23.52185821533203,
+          "predicted_value": -0.33864757001216506
+        }
+      },
+      "arm_torque5": {
+        "mae": 0.21634825960258605,
+        "rmse": 0.6590253230824303,
+        "r2": 0.8387098293058918,
+        "expert_mean": -0.028467651761605286,
+        "expert_std": 1.6409605936252982,
+        "prediction_mean": 0.034978468004969024,
+        "prediction_std": 1.4351059462348812,
+        "prediction_min": -13.30564910578695,
+        "prediction_max": 9.434071889353216,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque5",
+          "absolute_error": 30.0469737012176,
+          "target_id": 306,
+          "time_s": 6.075,
+          "expert_value": -30.0,
+          "predicted_value": 0.04697370121759852
+        }
+      },
+      "arm_torque6": {
+        "mae": 0.20181483513041173,
+        "rmse": 0.41291915094221493,
+        "r2": 0.9685366513667767,
+        "expert_mean": 2.8300373497883107,
+        "expert_std": 2.3278905342728446,
+        "prediction_mean": 2.803968023264026,
+        "prediction_std": 2.213529192273302,
+        "prediction_min": -29.725242658240294,
+        "prediction_max": 24.643505736334383,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque6",
+          "absolute_error": 28.065455734393606,
+          "target_id": 269,
+          "time_s": 1.5190000000000001,
+          "expert_value": 30.0,
+          "predicted_value": 1.9345442656063931
+        }
+      },
+      "arm_torque7": {
+        "mae": 0.1344810923866307,
+        "rmse": 0.21068418232793396,
+        "r2": 0.9688796760525922,
+        "expert_mean": 0.00925161373127323,
+        "expert_std": 1.1942902215443698,
+        "prediction_mean": -0.05236243012783802,
+        "prediction_std": 1.2090364328801144,
+        "prediction_min": -25.149482050619472,
+        "prediction_max": 27.510859799378167,
+        "worst_example": {
+          "model": "LSTM",
+          "output": "arm_torque7",
+          "absolute_error": 10.88725858902951,
+          "target_id": 278,
+          "time_s": 2.362,
+          "expert_value": 24.811389923095703,
+          "predicted_value": 13.924131334066193
+        }
+      }
+    }
+  },
+  "lstm_vs_mlp_prediction_disagreement": {
+    "wheel_mean_absolute_difference_rad_per_s": 0.09335837930343036,
+    "arm_mean_absolute_difference_nm": 0.20555290124329578,
+    "per_output": {
+      "wheel_cmd1": {
+        "mae": 0.09542177070646256,
+        "rmse": 0.16040827739823635
+      },
+      "wheel_cmd2": {
+        "mae": 0.09129501512905315,
+        "rmse": 0.15035699431952046
+      },
+      "wheel_cmd3": {
+        "mae": 0.09129499802480938,
+        "rmse": 0.15035698666963473
+      },
+      "wheel_cmd4": {
+        "mae": 0.09542173335339632,
+        "rmse": 0.1604082477583854
+      },
+      "arm_torque1": {
+        "mae": 0.25600453325905415,
+        "rmse": 0.39573288951839136
+      },
+      "arm_torque2": {
+        "mae": 0.22819698110180672,
+        "rmse": 0.32430782686194937
+      },
+      "arm_torque3": {
+        "mae": 0.19583967637894795,
+        "rmse": 0.3613402704166125
+      },
+      "arm_torque4": {
+        "mae": 0.24899902590604372,
+        "rmse": 0.33625898513145386
+      },
+      "arm_torque5": {
+        "mae": 0.1830604707453893,
+        "rmse": 0.27297127270362864
+      },
+      "arm_torque6": {
+        "mae": 0.17575296900241055,
+        "rmse": 0.2801165976454009
+      },
+      "arm_torque7": {
+        "mae": 0.151016652309418,
+        "rmse": 0.2304485541957819
+      }
+    }
+  },
+  "interpretation_guide": {
+    "if_lstm_errors_are_much_higher": "The LSTM checkpoint is learning the validation observation-to-action mapping less accurately than the MLP.",
+    "if_errors_are_similar_but_closed_loop_differs": "Look next at runtime feature construction, action application, controller state, and closed-loop distribution shift.",
+    "if_wheel_errors_are_high": "The base navigation commands are a major source of the mismatch.",
+    "if_arm_torque_errors_are_high": "The arm torque predictions are a major source of the mismatch."
+  }
+}
