@@ -2892,6 +2892,316 @@ def qualification_main():
     print('Review each paired outcome, true errors and failures before approving any recovery demonstrations. Files:',data_path,metadata_path)
 
 
+def closed_loop_validation_main():
+    """Reproducible standard Validation runs using the existing simulator runner.
+
+    Resume never reruns completed or failed episodes. Interrupted episodes restart
+    from their original seeded initial state, retaining every previous attempt.
+    Missing evaluations are explicit report rows, never successes or denominator rows.
+    """
+    import fcntl
+    from datetime import datetime, timezone
+
+    if __package__:
+        from .mlp.reporting import atomic_json, write_validation_reports
+    else:
+        from mlp.reporting import atomic_json, write_validation_reports
+
+    resume_policy = (
+        'Completed episodes are never rerun. Failed episodes remain recorded and are skipped. '
+        'Interrupted episodes restart from the original seeded initial state; previous attempts '
+        'are retained. Missing evaluations are reported explicitly. Only completed standard '
+        'Validation evaluations enter success-rate denominators.')
+    parser = argparse.ArgumentParser(
+        description='Seven-controller headless noisy Closed-Loop Validation (WSL/Linux).',
+        epilog=resume_policy)
+    parser.add_argument('--validate-closed-loop', action='store_true', required=True)
+    parser.add_argument('--qualification', action='store_true',
+                        help='Use the first three sorted Validation IDs for all seven controllers.')
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume an existing compatible run; skip completed and failed episodes.')
+    args = parser.parse_args()
+    print('Resume policy:', resume_policy)
+
+    controllers = ['expert', 'clean', 'noisy', 'goal35', 'history70',
+                   'target37', 'target37_filtered']
+    task = Path(__file__).resolve().parent
+    project = task.parents[1]
+    robo = project/'RoboEnv'
+    manifest_path = RESULTS/METADATA/'pipeline_manifest.json'
+    split_path = RESULTS/METADATA/'split_validation.json'
+    target_path = RESULTS/DATASETS/'targets_500.csv'
+    pipeline = load_json(manifest_path)
+    split_record = load_json(split_path)
+    splits = [pipeline['splits'][name] for name in ('train', 'validation', 'test')]
+    if (split_record.get('valid') is not True
+            or [len(ids) for ids in splits] != [350, 75, 75]
+            or any(len(ids) != len(set(ids)) for ids in splits)
+            or set().union(*(set(ids) for ids in splits)) != set(range(1, 501))
+            or pipeline['schema']['inputs'] != INPUTS
+            or pipeline['schema']['outputs'] != OUTPUTS
+            or sha(target_path) != pipeline['plan_files']['targets_500.csv']):
+        raise ValueError('Invalid production manifest, split metadata or target plan')
+    target_ids = sorted(pipeline['splits']['validation'])
+    if args.qualification:
+        target_ids = target_ids[:3]
+
+    checkpoint_paths = {
+        'expert': None,
+        'clean': RESULTS/EXPERIMENTS/'mlp_clean_scaled_full/best_model.pt',
+        'noisy': RESULTS/EXPERIMENTS/'mlp_noisy_scaled_full/best_model.pt',
+        'goal35': RESULTS/EXPERIMENTS/'mlp_noisy_goal35_scaled_full/best_model.pt',
+        'history70': RESULTS/EXPERIMENTS/'mlp_noisy_history70_scaled_full/best_model.pt',
+        'target37': RESULTS/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt',
+        'target37_filtered': RESULTS/EXPERIMENTS/'mlp_noisy_target37_filtered_scaled_full/best_model.pt',
+    }
+    # Fail before creating a run directory or starting any simulator. Reading the
+    # entire file for SHA-256 also checks readability beyond the first byte.
+    checkpoint_hashes, checkpoint_errors = {}, []
+    for controller, path in checkpoint_paths.items():
+        if path is None:
+            checkpoint_hashes[controller] = None
+            continue
+        try:
+            if not path.is_file():
+                raise FileNotFoundError(f'Not a checkpoint file: {path}')
+            with path.open('rb') as handle:
+                if not handle.read(1):
+                    raise ValueError(f'Empty checkpoint: {path}')
+            checkpoint_hashes[controller] = sha(path)
+        except (OSError, ValueError) as exc:
+            checkpoint_errors.append(f'{controller}: {exc}')
+    if checkpoint_errors:
+        raise RuntimeError('Checkpoint preflight failed; no episodes started:\n'
+                           + '\n'.join(checkpoint_errors))
+
+    deployment = [
+        robo/'configs/robotnik_arm.json', task/'robotnik_arm_control.py',
+        robo/'simulation_and_control/simulation_and_control/sim/pybullet_robot_interface.py',
+        robo/'simulation_and_control/simulation_and_control/controllers/servo_motor.py',
+        robo/'simulation_and_control/simulation_and_control/controllers/pin_wrapper.py',
+        robo/'models/summit_xl_arm_description/summit_xl_complete.urdf',
+        robo/'models/summit_xl_arm_description/summit_xl_complete_pin.urdf',
+    ]
+    production_hashes = {key.replace('\\', '/'): value
+                         for key, value in pipeline['source_sha256'].items()}
+    for path in deployment:
+        relative = path.relative_to(project).as_posix()
+        if sha(path) != production_hashes.get(relative):
+            raise ValueError(f'Production source/configuration mismatch: {relative}')
+    source_paths = sorted(set(deployment + [Path(__file__).resolve(), task/'result_paths.py']
+                              + list((task/'mlp').glob('*.py'))))
+    provenance_paths = source_paths+[manifest_path, split_path, target_path]
+
+    def now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def fingerprint():
+        packages = {}
+        for name in ('numpy', 'pandas', 'torch', 'scikit-learn',
+                     'scipy', 'pin', 'pybullet', 'matplotlib'):
+            try:
+                packages[name] = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                packages[name] = None
+        return dict(
+            format='ee_proximity_validation75_v1', qualification_subset=args.qualification,
+            controllers=controllers, target_ids=target_ids, observations='noisy', gui=False,
+            evaluation_scope='validation', resume_policy=resume_policy,
+            metrics=dict(
+                minimum='All finite observed true EE errors at 1ms, including terminal',
+                success_5cm='minimum_true_ee_error_m < 0.05',
+                success_10cm='minimum_true_ee_error_m < 0.10',
+                denominator='Completed standard Validation episodes only',
+                standard_deviation_ddof=0, percentile_method='linear'),
+            stopping='Existing closed_loop_main stopping and safety behavior unchanged',
+            seeds={str(tid): int((42+tid*104729+19937) % 2**32) for tid in target_ids},
+            checkpoint_hashes={
+                controller: dict(
+                    path=None if path is None else path.relative_to(project).as_posix(),
+                    sha256=None if path is None else sha(path))
+                for controller, path in checkpoint_paths.items()},
+            source_and_metadata_hashes={path.relative_to(project).as_posix(): sha(path)
+                                        for path in provenance_paths},
+            environment=dict(
+                python=sys.version, platform=platform.platform(), packages=packages,
+                thread_environment={key: os.environ.get(key) for key in (
+                    'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                    'CUDA_VISIBLE_DEVICES')}),
+        )
+
+    identity = fingerprint()
+    if any(identity['checkpoint_hashes'][controller]['sha256'] != digest
+           for controller, digest in checkpoint_hashes.items()):
+        raise RuntimeError('Checkpoint changed during preflight')
+    name = ('ee_proximity_validation3_qualification_v1' if args.qualification
+            else 'ee_proximity_validation75_v1')
+    requested = args.output or RESULTS/EVALUATIONS/name
+    if requested.is_symlink():
+        parser.error('Output directory must not be a symlink')
+    output = requested.resolve()
+    if output.parent != (RESULTS/EVALUATIONS).resolve():
+        parser.error('Output must be directly under results/evaluations')
+    if args.resume:
+        if not output.is_dir():
+            parser.error('--resume requires an existing run directory')
+    else:
+        output.mkdir(exist_ok=False)
+
+    if (output/'.run.lock').is_symlink():
+        raise ValueError('Run lock must not be a symlink')
+    with (output/'.run.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError('Another process owns this evaluation directory')
+        run_manifest, progress_path = output/'manifest.json', output/'progress.json'
+        if args.resume:
+            if run_manifest.is_symlink() or not run_manifest.is_file():
+                raise ValueError('Missing regular run manifest; refusing to adopt directory')
+            if load_json(run_manifest).get('identity') != identity:
+                raise ValueError('Resume configuration/source/checkpoint/environment mismatch')
+            if progress_path.is_symlink() or not progress_path.is_file():
+                raise ValueError('Missing regular progress file; cannot safely resume')
+        else:
+            atomic_json(run_manifest, dict(created_utc=now(), identity=identity))
+        manifest_hash = sha(run_manifest)
+        progress = (load_json(progress_path) if args.resume else
+                    dict(manifest_sha256=manifest_hash, run_status='incomplete', attempts=[]))
+        if progress.get('manifest_sha256') != manifest_hash:
+            raise ValueError('Progress belongs to a different run manifest')
+        if not isinstance(progress.get('attempts'), list):
+            raise ValueError('Invalid progress attempt history')
+        planned = {(controller, tid) for controller in controllers for tid in target_ids}
+
+        def validate_completed(episode):
+            controller = episode['controller']
+            if (episode.get('evaluation_scope') != 'validation'
+                    or episode.get('target_split') != 'validation'
+                    or episode.get('checkpoint_sha256') !=
+                    identity['checkpoint_hashes'][controller]['sha256']):
+                raise ValueError('Episode scope/checkpoint provenance mismatch')
+            for value in (
+                episode.get('minimum_true_ee_error_m'),
+                episode.get('minimum_true_ee_error_time_s'),
+                episode.get('simulation_duration_s'),
+                episode.get('terminal', {}).get('true_ee_error_m'),
+            ):
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or value < 0):
+                    raise ValueError('Completed episode has missing/invalid measurements')
+            if episode['minimum_true_ee_error_time_s'] > episode['simulation_duration_s']:
+                raise ValueError('Closest approach occurs after the episode duration')
+            expected = ee_proximity(episode['minimum_true_ee_error_m'])
+            if any(episode.get(key) != value for key, value in expected.items()):
+                raise ValueError('Completed episode proximity fields disagree')
+
+        def latest():
+            records = {}
+            for episode in progress['attempts']:
+                key = episode['controller'], episode['target_id']
+                if key not in planned:
+                    raise ValueError('Progress contains an unplanned episode')
+                if key in records and records[key]['evaluation_status'] in ('completed', 'failed'):
+                    raise ValueError('Progress attempts to replace a completed/failed episode')
+                if episode['evaluation_status'] not in ('running', 'interrupted', 'failed', 'completed'):
+                    raise ValueError('Invalid persisted evaluation status')
+                if episode['evaluation_status'] == 'completed':
+                    validate_completed(episode)
+                records[key] = episode
+            return records
+
+        def persist():
+            atomic_json(progress_path, progress)
+
+        def report(plots=False):
+            records = latest()
+            ordered = [records.get((controller, tid), dict(
+                controller=controller, target_id=tid, evaluation_scope='validation',
+                target_split='validation', evaluation_status='missing',
+                evaluation_failure='Not yet attempted', **ee_proximity(None)))
+                for controller in controllers for tid in target_ids]
+            return write_validation_reports(output, ordered, controllers, plots=plots)
+
+        latest()  # Validate persisted records before resuming anything.
+        for episode in progress['attempts']:
+            if episode['evaluation_status'] == 'running':
+                episode.update(evaluation_status='interrupted',
+                               evaluation_failure='Previous process ended before episode commit')
+        persist()
+        report()
+        try:
+            for controller in controllers:
+                for target_id in target_ids:
+                    previous = latest().get((controller, target_id))
+                    if previous and previous['evaluation_status'] in ('completed', 'failed'):
+                        continue
+                    if fingerprint() != identity or sha(run_manifest) != manifest_hash:
+                        raise RuntimeError('Evaluation provenance changed; stopping run')
+                    attempt = dict(
+                        controller=controller, target_id=target_id, target_split='validation',
+                        evaluation_scope='validation', evaluation_status='running', started_utc=now())
+                    progress['attempts'].append(attempt)
+                    persist()
+                    argv = [str(Path(__file__)), '--closed-loop', '--controller', controller,
+                            '--target-id', str(target_id), '--observations', 'noisy', '--no-save']
+                    option = {'goal35': '--goal35-checkpoint', 'history70': '--history70-checkpoint',
+                              'target37': '--target37-checkpoint',
+                              'target37_filtered': '--target37-checkpoint'}.get(controller)
+                    if option:
+                        argv += [option, str(checkpoint_paths[controller])]
+                    outcome = {}
+                    original_argv = sys.argv
+                    try:
+                        sys.argv = argv
+                        closed_loop_main(evaluation_record=outcome)
+                        if fingerprint() != identity or sha(run_manifest) != manifest_hash:
+                            raise RuntimeError('Evaluation provenance changed during episode')
+                        if (outcome.get('controller') != controller
+                                or outcome.get('target_id') != target_id):
+                            raise ValueError('Runner returned a different controller/target')
+                        if outcome.get('evaluation_status') != 'completed':
+                            raise RuntimeError(outcome.get(
+                                'evaluation_failure', outcome.get('stop_reason', 'Episode failed')))
+                        validate_completed(outcome)
+                    except Exception as exc:
+                        outcome.update(evaluation_status='failed',
+                                       evaluation_failure=f'{type(exc).__name__}: {exc}')
+                    except BaseException as exc:
+                        outcome.update(evaluation_status='interrupted',
+                                       evaluation_failure=f'{type(exc).__name__}: {exc}')
+                        raise
+                    finally:
+                        sys.argv = original_argv
+                        outcome.pop('trace', None)
+                        attempt.update(outcome)
+                        attempt.update(controller=controller, target_id=target_id,
+                                       evaluation_scope='validation', target_split='validation',
+                                       finished_utc=now())
+                        attempt.update(ee_proximity(attempt.get('minimum_true_ee_error_m')))
+                        persist()
+                        report()
+                        print_proximity_report([attempt])
+        finally:
+            records = latest()
+            for episode in records.values():
+                if episode['evaluation_status'] == 'running':
+                    episode.update(evaluation_status='interrupted',
+                                   evaluation_failure='Execution interrupted before episode commit')
+            records = latest()
+            terminal = len(records) == len(planned) and all(
+                episode['evaluation_status'] in ('completed', 'failed')
+                for episode in records.values())
+            progress['run_status'] = ('finished_with_failures' if terminal and any(
+                e['evaluation_status'] == 'failed' for e in records.values()) else
+                'completed' if terminal else 'incomplete')
+            persist()
+            for summary in report(plots=True):
+                print(summary)
+    print('Closed-Loop Validation reports:', output)
+
+
 def verify_history70_main():
     """Optional user-run, in-memory checks; no datasets, checkpoints or files touched."""
     require_ml_dependencies()
@@ -2941,6 +3251,8 @@ if __name__ == '__main__':
         else:
             from mlp.reporting import refresh_saved_comparison
         refresh_saved_comparison(args.results)
+    elif '--validate-closed-loop' in sys.argv:
+        closed_loop_validation_main()
     elif '--evaluate-all-conditions' in sys.argv:
         all_conditions_main()
     elif '--collect-dagger' in sys.argv:

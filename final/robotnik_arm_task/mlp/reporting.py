@@ -394,3 +394,215 @@ def refresh_saved_comparison(root):
         print(notice)
     print(f'Included {len(included)} experiments; skipped {len(skipped)}. Saved: {destination}')
     print(warning)
+
+
+def atomic_report(path, write, binary=False):
+    """Replace an owned report/state file atomically and durably (WSL/Linux)."""
+    import os
+    import tempfile
+
+    if path.is_symlink():
+        raise ValueError(f'Report path must not be a symlink: {path}')
+    fd, temporary = tempfile.mkstemp(
+        prefix='.'+path.name+'.', suffix='.tmp', dir=path.parent)
+    try:
+        options = {} if binary else dict(encoding='utf-8', newline='')
+        with os.fdopen(fd, 'wb' if binary else 'w', **options) as handle:
+            write(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_json(path, value):
+    import json
+
+    atomic_report(path, lambda handle: json.dump(
+        value, handle, indent=2, allow_nan=False))
+
+
+def write_validation_reports(output, episodes, controllers, plots=False):
+    """Include every planned target; only completed Validation rows enter rates.
+
+    Failed episodes are recorded and skipped on resume. Interrupted episodes
+    restart from the original seeded initial state; completed episodes never rerun.
+    Missing rows mean not yet attempted, not failure or success.
+    """
+    import csv
+
+    def write_csv(name, rows, fields):
+        def write(handle):
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        atomic_report(output/name, write)
+
+    def finite(value):
+        return (value if not isinstance(value, bool) and isinstance(value, (int, float))
+                and math.isfinite(value) else None)
+
+    def centimetres(value):
+        value = finite(value)
+        return None if value is None else value*100
+
+    per_target = []
+    for episode in episodes:
+        terminal = episode.get('terminal', {})
+        minimum = finite(episode.get('minimum_true_ee_error_m'))
+        per_target.append(dict(
+            model=episode['controller'], target_id=episode['target_id'],
+            minimum_true_ee_error_m=minimum,
+            minimum_true_ee_error_cm=centimetres(minimum),
+            final_true_ee_error_m=finite(terminal.get('true_ee_error_m')),
+            final_true_ee_error_cm=centimetres(terminal.get('true_ee_error_m')),
+            time_to_minimum_s=finite(episode.get('minimum_true_ee_error_time_s')),
+            episode_duration_s=finite(episode.get('simulation_duration_s')),
+            ee_success_5cm=episode.get('ee_success_5cm'),
+            ee_success_10cm=episode.get('ee_success_10cm'),
+            evaluation_status=episode['evaluation_status'],
+            evaluation_scope=episode.get('evaluation_scope'),
+            stop_reason=episode.get('stop_reason', ''),
+            failure_information=episode.get('evaluation_failure', ''),
+        ))
+    write_csv('per_target.csv', per_target, [
+        'model', 'target_id', 'minimum_true_ee_error_m', 'minimum_true_ee_error_cm',
+        'final_true_ee_error_m', 'final_true_ee_error_cm', 'time_to_minimum_s',
+        'episode_duration_s', 'ee_success_5cm', 'ee_success_10cm',
+        'evaluation_status', 'evaluation_scope', 'stop_reason', 'failure_information',
+    ])
+
+    # Missing/running/interrupted attempts are not completed evaluations or failures.
+    aggregates = proximity_summary([
+        episode for episode in episodes
+        if episode['evaluation_status'] in ('completed', 'failed')])
+    summaries = []
+    for controller in controllers:
+        planned = [episode for episode in episodes if episode['controller'] == controller]
+        eligible = [episode for episode in planned
+                    if episode.get('evaluation_scope') == 'validation'
+                    and episode.get('target_split') == 'validation'
+                    and episode.get('evaluation_status') == 'completed']
+        values = [episode['minimum_true_ee_error_m']*100 for episode in eligible]
+        aggregate = aggregates.get(controller, {})
+        row = dict(
+            model=controller, planned_targets=len(planned),
+            evaluated_targets=aggregate.get('evaluated_targets', 0),
+            evaluation_failures=len(aggregate.get('evaluation_failures', [])),
+            missing_evaluations=sum(e['evaluation_status'] == 'missing' for e in planned),
+            interrupted_evaluations=sum(e['evaluation_status'] == 'interrupted' for e in planned),
+            running_evaluations=sum(e['evaluation_status'] == 'running' for e in planned),
+            success_5cm_count=aggregate.get('reached_5cm', 0),
+            success_5cm_rate_percent=aggregate.get('success_rate_5cm_percent'),
+            success_10cm_count=aggregate.get('reached_10cm', 0),
+            success_10cm_rate_percent=aggregate.get('success_rate_10cm_percent'),
+            minimum_true_ee_mean_cm=float(np.mean(values)) if values else None,
+            minimum_true_ee_median_cm=float(np.median(values)) if values else None,
+            minimum_true_ee_p90_cm=float(np.percentile(values, 90)) if values else None,
+            minimum_true_ee_std_cm=float(np.std(values, ddof=0)) if values else None,
+            final_true_ee_mean_cm=None, time_to_closest_mean_s=None,
+            episode_duration_mean_s=None,
+        )
+        if eligible:
+            row.update(
+                final_true_ee_mean_cm=float(np.mean([
+                    episode['terminal']['true_ee_error_m']*100 for episode in eligible])),
+                time_to_closest_mean_s=float(np.mean([
+                    episode['minimum_true_ee_error_time_s'] for episode in eligible])),
+                episode_duration_mean_s=float(np.mean([
+                    episode['simulation_duration_s'] for episode in eligible])),
+            )
+        summaries.append(row)
+    write_csv('summary.csv', summaries, [
+        'model', 'planned_targets', 'evaluated_targets', 'evaluation_failures',
+        'missing_evaluations', 'interrupted_evaluations', 'running_evaluations',
+        'success_5cm_count', 'success_5cm_rate_percent',
+        'success_10cm_count', 'success_10cm_rate_percent',
+        'minimum_true_ee_mean_cm', 'minimum_true_ee_median_cm',
+        'minimum_true_ee_p90_cm', 'minimum_true_ee_std_cm', 'final_true_ee_mean_cm',
+        'time_to_closest_mean_s', 'episode_duration_mean_s',
+    ])
+    if not plots:
+        return summaries
+
+    import os
+    import tempfile
+
+    previous_cache = os.environ.get('MPLCONFIGDIR')
+    with tempfile.TemporaryDirectory(prefix='.mpl-', dir=output) as cache:
+        os.environ['MPLCONFIGDIR'] = cache
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            from matplotlib import pyplot as plt
+
+            x = np.arange(len(controllers))
+            labels = [
+                f"{row['model']}\nn={row['evaluated_targets']}, fail={row['evaluation_failures']}"
+                f"\nmissing={row['missing_evaluations']}, interrupted={row['interrupted_evaluations']}"
+                for row in summaries]
+
+            def save(figure, name):
+                try:
+                    figure.tight_layout()
+                    atomic_report(output/name, lambda handle: figure.savefig(
+                        handle, format='png', dpi=150), binary=True)
+                finally:
+                    plt.close(figure)
+
+            figure, axis = plt.subplots(figsize=(14, 6))
+            for offset, cm in ((-.2, 5), (.2, 10)):
+                rates = [row[f'success_{cm}cm_rate_percent']
+                         if row[f'success_{cm}cm_rate_percent'] is not None else np.nan
+                         for row in summaries]
+                axis.bar(x+offset, rates, width=.4, label=f'<{cm} cm')
+            for index, row in enumerate(summaries):
+                if not row['evaluated_targets']:
+                    axis.text(index, 2, 'N/A', ha='center')
+            axis.set_xticks(x, labels)
+            axis.set(ylabel='Completed Validation success rate (%)', ylim=(0, 105),
+                     title='True EE closest-approach success')
+            axis.legend()
+            save(figure, 'success_rates.png')
+
+            figure, axis = plt.subplots(figsize=(14, 6))
+            series, positions = [], []
+            for index, controller in enumerate(controllers):
+                values = [row['minimum_true_ee_error_cm'] for row in per_target
+                          if row['model'] == controller
+                          and row['evaluation_status'] == 'completed'
+                          and row['evaluation_scope'] == 'validation']
+                if values:
+                    series.append(values)
+                    positions.append(index)
+            if series:
+                axis.boxplot(series, positions=positions, manage_ticks=False)
+            axis.set_xticks(x, labels)
+            axis.axhline(5, linestyle='--', color='green', label='5 cm')
+            axis.axhline(10, linestyle=':', color='orange', label='10 cm')
+            axis.set(ylabel='Minimum true EE error (cm)', title='Completed Validation episodes')
+            axis.legend()
+            save(figure, 'best_ee_boxplot.png')
+
+            figure, axis = plt.subplots(figsize=(14, 6))
+            times = [row['time_to_closest_mean_s']
+                     if row['time_to_closest_mean_s'] is not None else np.nan
+                     for row in summaries]
+            axis.bar(x, times)
+            axis.set_xticks(x, labels)
+            axis.set(ylabel='Mean time to closest approach (s)',
+                     title='Completed Validation episodes')
+            save(figure, 'time_to_best.png')
+        finally:
+            if previous_cache is None:
+                os.environ.pop('MPLCONFIGDIR', None)
+            else:
+                os.environ['MPLCONFIGDIR'] = previous_cache
+    return summaries
