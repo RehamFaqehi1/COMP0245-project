@@ -92,21 +92,23 @@ def mount_clearance(sim, link, np):
         client.removeBody(probe)
 
 
-def custom_rollout(args, output, robo, task, np, expert, pb):
+def custom_rollout(args, output, robo, task, np, expert, pb, fixed_obstacle_xy=None):
     """Independent custom task; original Expert functions, no runner/CSV substitution."""
     import pinocchio as pin
     from simulation_and_control import MotorCommands, PinWrapper
     from result_paths import RESULTS, METADATA, DATASETS
     from mlp.features import INPUTS, OUTPUTS
     from mlp.reporting import ee_proximity, proximity_summary, print_proximity_report
-    task_id = 'custom_bearing28_base4m_v1'
+    task_id = args.task
+    fixed_task = task_id == 'custom_fixed_obstacle_target_base4m_v2'
+    reference_id = args.target_id if fixed_task else 28
     manifest_path = RESULTS / METADATA / 'pipeline_manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
     targets_path = RESULTS / DATASETS / 'targets_500.csv'
     if digest(targets_path) != manifest['plan_files']['targets_500.csv']:
         raise ValueError('Original target-list identity mismatch')
     with targets_path.open(newline='') as handle:
-        reference = next(r for r in csv.DictReader(handle) if int(r['target_id']) == 28)
+        reference = next(r for r in csv.DictReader(handle) if int(r['target_id']) == reference_id)
     bearing = math.atan2(float(reference['target_y']), float(reference['target_x']))
     height = float(reference['target_z'])
     direction = np.array([math.cos(bearing), math.sin(bearing)])
@@ -130,12 +132,21 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
     identities = {str(p): digest(p) for p in sources}
     if config['sim']['time_step'] != DT or config['robot_pybullet']['delay_measure_flag'] != [0]:
         raise ValueError('Expected original 1ms timestep and zero measurement delay')
-    record = dict(controller='Expert 2', task_id=task_id, split=None, scene=args.scene,
-        reference=dict(target_id=28, use='Bearing and height only; not a Target 28 rollout or Validation evaluation'),
+    record = dict(controller='Expert 2', task_id=task_id, target_id=None,
+        evaluation_scope='custom_scenario', target_split=None,
+        reference_target_id=reference_id,
+        obstacle_reference_target_id=getattr(args, 'obstacle_anchor_target_id', reference_id),
+        split=None, scene=args.scene,
+        reference=dict(target_id=reference_id,
+            use='Bearing and height only; transformed custom target, not an original Validation-target evaluation'),
         target_xyz=target.tolist(), goal_xy=goal.tolist(), bearing_rad=bearing, standoff_m=standoff,
-        configuration=config, source_sha256=identities, seed=2952391, status='initialising',
+        configuration=config, source_sha256=identities,
+        seed=int((2952391 + reference_id * 104729) % 2**32) if fixed_task else 2952391,
+        status='initialising',
         dt_s=DT, sensor_period_s=.01, control_period_s=DT, navigation_timeout_s=25., episode_cap_s=40.,
-        sensor=dict(link='robot_base_link', mount_m=MOUNT, angles_deg=ANGLES, range_m=RAY_RANGE),
+        sensor=dict(link='robot_base_link', mount_m=MOUNT, angles_deg=ANGLES, range_m=RAY_RANGE,
+                    categories=dict(no_hit='green: no obstacle within range', obstacle='orange: external obstacle',
+                                   self_hit='red: robot self-hit', floor_hit='magenta: ground hit')),
         navigation=dict(normal_completion=False, completion_s=None, timeout=False, completed_waypoints=[],
                         attempts=1, recoveries=[], max_recoveries=100),
         visualization=dict(gui=args.gui, fast_gui=args.fast_gui,
@@ -232,20 +243,40 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
             obstacle, route = None, [start, goal]
             floor_top = float(client.getAABB(sim.ground_body, -1)[1][2])
             if args.scene != 'empty':
-                sign = 1 if args.scene == 'left' else -1
-                centre, bypass = 2. * direction + sign * .03 * normal, 2. * direction - sign * 1.25 * normal
+                if fixed_task:
+                    if fixed_obstacle_xy is None:
+                        raise ValueError('Obstacle scenes require one fixed world XY anchor for this run or target batch')
+                    centre = np.asarray(fixed_obstacle_xy, dtype=float)
+                    if centre.shape != (2,) or not np.isfinite(centre).all():
+                        raise ValueError('Fixed obstacle XY must contain two finite world coordinates')
+                else:
+                    sign = 1 if args.scene == 'left' else -1
+                    centre, bypass = 2. * direction + sign * .03 * normal, 2. * direction - sign * 1.25 * normal
                 inflated = radius + math.hypot(.05, .05) + .20
+                blocks_direct_route = segment_distance(centre, start, goal, np) < inflated
                 reach_clearance = float(np.linalg.norm(centre - goal) - math.hypot(.05, .05) - reach_radius - .08)
-                record['placement'] = dict(centre_xy_m=centre.tolist(), bypass_xy_m=bypass.tolist(),
-                    navigation_inflation_m=inflated, reaching_radius_bound_m=reach_radius,
-                    reaching_clearance_bound_m=reach_clearance, margin_m=.20)
+                if fixed_task:
+                    record['placement'] = dict(centre_xy_m=centre.tolist(),
+                        fixed_world_position=True,
+                        reference_target_id=getattr(args, 'obstacle_anchor_target_id', reference_id),
+                        blocks_direct_route=blocks_direct_route, navigation_inflation_m=inflated,
+                        reaching_radius_bound_m=reach_radius,
+                        reaching_clearance_bound_m=reach_clearance, margin_m=.20)
+                else:
+                    record['placement'] = dict(centre_xy_m=centre.tolist(), bypass_xy_m=bypass.tolist(),
+                        navigation_inflation_m=inflated, reaching_radius_bound_m=reach_radius,
+                        reaching_clearance_bound_m=reach_clearance, margin_m=.20)
                 if min(np.linalg.norm(centre - start), np.linalg.norm(centre - goal)) <= inflated or reach_clearance <= .20:
                     raise ValueError('Custom obstacle fails endpoint/reaching clearance')
-                if segment_distance(centre, start, goal, np) >= inflated:
-                    raise ValueError('Obstacle does not block inflated direct route')
-                route = plan_path(start, goal, centre, inflated, np, bypass=bypass)
+                if fixed_task:
+                    route = (plan_path(start, goal, centre, inflated, np) if blocks_direct_route
+                             else [start, goal])
+                else:
+                    if not blocks_direct_route:
+                        raise ValueError('Obstacle does not block inflated direct route')
+                    route = plan_path(start, goal, centre, inflated, np, bypass=bypass)
                 if any(segment_distance(centre, a, b, np) <= inflated for a, b in zip(route[:-1], route[1:])):
-                    raise ValueError('Bypass segment clearance failed')
+                    raise ValueError('Planned route clearance failed' if fixed_task else 'Bypass segment clearance failed')
                 shape = client.createCollisionShape(client.GEOM_BOX, halfExtents=[.05, .05, .25])
                 visual = client.createVisualShape(client.GEOM_BOX, halfExtents=[.05, .05, .25], rgbaColor=[1, .6, 0, 1])
                 obstacle = client.createMultiBody(baseMass=0, baseCollisionShapeIndex=shape,
@@ -490,25 +521,32 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
                               report, indent=2, allow_nan=False)
                     report.write('\n')
     print_proximity_report([record])
-    print(task_id, 'Saved:', output)
+    print(task_id, 'Reference target:', reference_id, 'Saved:', output)
+    return record
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--target-id', type=int, default=28)
+    parser.add_argument('--target-id', type=int, default=28, help='Single-episode target ID.')
+    parser.add_argument('--target-ids', type=int, nargs='+',
+                        help='Custom task only: collect one Expert episode per target in one output folder; first ID anchors the obstacle.')
+    parser.add_argument('--obstacle-xy', type=float, nargs=2, metavar=('X', 'Y'),
+                        help='Fixed obstacle world XY; otherwise anchor it from the first target in the batch.')
     parser.add_argument('--scene', choices=['empty', 'left', 'right'], default='empty',
-                        help='Box lies left/right of the start-to-goal line; route is planned geometrically.')
+                        help='Fixed obstacle anchored left/right of the first target route; route uses geometric planning.')
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--fast-gui', action='store_true',
                         help='Custom task only: GUI without playback sleep; debug rays at 20Hz.')
     parser.add_argument('--continue-after-measured-success', action='store_true',
                         help='Custom diagnostic only: continue measured-only success; retain stall/safety stops.')
-    parser.add_argument('--task', choices=['original', 'custom_bearing28_base4m_v1'], default='original',
-                        help='Original dataset-target mode, or independent custom target with original start.')
+    parser.add_argument('--task', choices=['original', 'custom_bearing28_base4m_v1',
+                                         'custom_fixed_obstacle_target_base4m_v2'], default='original',
+                        help='Original rollout, original Target28 custom bypass, or fixed-obstacle custom target episodes.')
     parser.add_argument('--start', choices=['original', 'extended'], default='original',
                         help='Extended: Target 28, 4.2m behind its unchanged final goal, facing the target.')
     args = parser.parse_args()
+    fixed_task = args.task == 'custom_fixed_obstacle_target_base4m_v2'
     if args.continue_after_measured_success and args.task == 'original':
         parser.error('--continue-after-measured-success requires the independent custom task')
     if args.fast_gui:
@@ -519,8 +557,21 @@ def main():
         parser.error('Obstacle qualification requires --start extended')
     if args.start == 'extended' and args.target_id != 28:
         parser.error('The approved extended-start arrangement is for Target 28 only')
-    if args.task != 'original' and (args.start != 'original' or args.target_id != 28):
-        parser.error('Custom task uses original start and the fixed bearing/height reference 28')
+    if args.task != 'original' and args.start != 'original':
+        parser.error('Custom task uses the original configured start')
+    if args.task == 'custom_bearing28_base4m_v1' and args.target_id != 28:
+        parser.error('The original custom task uses Target28 bearing and height')
+    if args.target_ids is not None and not fixed_task:
+        parser.error('--target-ids requires --task custom_fixed_obstacle_target_base4m_v2')
+    if args.target_ids is not None and (len(set(args.target_ids)) != len(args.target_ids)
+                                      or any(not 1 <= tid <= 500 for tid in args.target_ids)):
+        parser.error('--target-ids must be unique IDs in 1..500')
+    if fixed_task and not 1 <= args.target_id <= 500:
+        parser.error('--target-id must be in 1..500')
+    if args.obstacle_xy is not None and not fixed_task:
+        parser.error('--obstacle-xy requires --task custom_fixed_obstacle_target_base4m_v2')
+    if args.obstacle_xy is not None and args.scene == 'empty':
+        parser.error('--obstacle-xy requires --scene left or --scene right')
     output = args.output.resolve()
     if output.parent != HOME / 'results' or output.exists() or args.output.is_symlink():
         parser.error('Use a NEW directory directly under ray_sensors/results')
@@ -554,7 +605,55 @@ def main():
             robo / 'simulation_and_control/simulation_and_control/sim/pybullet_robot_interface.py'):
         raise RuntimeError('Unexpected controller/simulator import')
     if args.task != 'original':
-        custom_rollout(args, output, robo, task, np, expert, pb)
+        from mlp.reporting import ee_proximity, proximity_summary, print_proximity_report
+        target_ids = args.target_ids or [args.target_id]
+        fixed_xy = list(args.obstacle_xy) if args.obstacle_xy else None
+        anchor_id = target_ids[0]
+        if fixed_task and args.scene != 'empty' and fixed_xy is None:
+            targets_path = task / 'results/datasets/targets_500.csv'
+            with targets_path.open(newline='') as handle:
+                anchor = next(r for r in csv.DictReader(handle) if int(r['target_id']) == anchor_id)
+            anchor_bearing = math.atan2(float(anchor['target_y']), float(anchor['target_x']))
+            anchor_direction = np.array([math.cos(anchor_bearing), math.sin(anchor_bearing)])
+            anchor_normal = np.array([-anchor_direction[1], anchor_direction[0]])
+            sign = 1 if args.scene == 'left' else -1
+            fixed_xy = (2. * anchor_direction + sign * .03 * anchor_normal).tolist()
+        if args.target_ids:
+            output.mkdir(parents=True, exist_ok=False)
+            batch = dict(task=args.task, reference_target_ids=target_ids,
+                         target_id_role='Bearing/height references for transformed custom targets; not Validation evaluations',
+                         obstacle_xy_m=fixed_xy, obstacle_reference_target_id=anchor_id,
+                         episodes=[])
+            try:
+                for target_id in target_ids:
+                    episode_args = copy.copy(args)
+                    episode_args.target_id = target_id
+                    episode_args.obstacle_anchor_target_id = anchor_id
+                    episode_output = output / f'target_{target_id:03d}'
+                    try:
+                        episode_record = custom_rollout(
+                            episode_args, episode_output, robo, task, np, expert, pb, fixed_xy)
+                    except (Exception, KeyboardInterrupt) as exc:
+                        batch['episodes'].append(dict(
+                            target_id=None, reference_target_id=target_id, controller='Expert 2',
+                            evaluation_scope='custom_scenario', target_split=None,
+                            evaluation_status='failed',
+                            evaluation_failure=f'{type(exc).__name__}: {exc}',
+                            **ee_proximity(None)))
+                        if isinstance(exc, KeyboardInterrupt):
+                            raise
+                        continue
+                    batch['episodes'].append(episode_record)
+            finally:
+                batch['ee_proximity_summary'] = proximity_summary(batch['episodes'])
+                with (output / 'batch_manifest.json').open('x', encoding='utf-8') as report:
+                    json.dump(batch, report, indent=2, allow_nan=False)
+                    report.write('\n')
+                print_proximity_report(batch['episodes'])
+                print('Batch saved:', output)
+        else:
+            args.obstacle_anchor_target_id = anchor_id
+            custom_rollout(args, output, robo, task, np, expert, pb, fixed_xy)
         return
     import train_mlp as runner
     from mlp.reporting import ee_proximity, proximity_summary, print_proximity_report
@@ -967,6 +1066,10 @@ def main():
                 record['evaluation_status'] = ('completed' if record['status']=='completed'
                     and (outcome or {}).get('evaluation_status')=='completed'
                     and record['sources_unchanged'] and record['avoidance']['contact_steps']==0 else 'failed')
+                record['evaluation_scope'] = (
+                    'validation' if args.start == 'original' and args.scene == 'empty'
+                    else 'expert2_scenario')
+                record['target_split'] = (outcome or {}).get('target_split')
                 record['ee_proximity_summary'] = proximity_summary([record])
                 record['qualified_for_review'] = record['strict_success']
                 record['avoidance']['completed_without_contact'] = bool(

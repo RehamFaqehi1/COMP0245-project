@@ -3,7 +3,6 @@
 import math
 
 import numpy as np
-import torch
 
 from .features import HISTORY_POLICY, INPUTS, OUTPUTS, transform
 
@@ -17,9 +16,12 @@ def ee_proximity(minimum_error):
 
 
 def proximity_summary(episodes):
-    """Count only completed evaluations; retain failed/partial attempts separately."""
+    """Summarize Validation attempts only; count completed evaluations."""
     models = {}
     for episode in episodes:
+        if (episode.get('evaluation_scope') != 'validation'
+                or episode.get('target_split') != 'validation'):
+            continue
         model = models.setdefault(episode['controller'], dict(evaluated_targets=0,
             reached_5cm=0, reached_10cm=0, evaluation_failures=[]))
         if episode.get('evaluation_status') != 'completed':
@@ -44,7 +46,8 @@ def print_proximity_report(episodes):
               f'{episode.get("best_true_ee_error_cm")} cm | '
               f'Reached within 5 cm: {episode.get("ee_success_5cm")} | '
               f'Reached within 10 cm: {episode.get("ee_success_10cm")} | '
-              f'Evaluation: {episode.get("evaluation_status")}')
+              f'Evaluation: {episode.get("evaluation_status")} | '
+              f'Scope: {episode.get("evaluation_scope", "unclassified")}')
         print('Stop reason:', episode.get('stop_reason', 'unavailable'))
         print('Minimum true EE error time (s):',
               episode.get('minimum_true_ee_error_time_s'))
@@ -55,6 +58,8 @@ def print_proximity_report(episodes):
 
 
 def evaluate(model, chunks, xs, ys, device, feature_set='baseline33'):
+    import torch
+
     count = 0
     mean, m2, absolute, square = (np.zeros(11, dtype=np.float64) for _ in range(4))
     scaled_square = 0.

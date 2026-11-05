@@ -246,7 +246,7 @@ def main():
             if args.gui:
                 sys.argv.append("--gui")
             summary['status'] = 'running'
-            outcome = runner.closed_loop_main()
+            outcome = runner.closed_loop_main(pilot=True)
             outcome.pop('trace', None)
             summary.update(status='completed', expert_outcome=outcome)
         except BaseException as exc:
