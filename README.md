@@ -141,9 +141,8 @@ Saved full-run directories below are under `final/robotnik_arm_task/results/expe
 | History70 | 70 / `history70` | Current Goal35 plus its 100 ms history, padded with the first observation at startup | `mlp_clean_history70_scaled_full/`, `mlp_noisy_history70_scaled_full/` |
 | Target37 | 37 / `target37` | Baseline plus target-relative body X/Y, planar distance and wrapped heading error | `mlp_clean_target37_scaled_full/`, `mlp_noisy_target37_scaled_full/` |
 | Target37 Filtered | 37 / `target37_filtered` | Causal two-stage pose smoothing, then derivatives for six base-motion slots; 20 ms per stage | `mlp_clean_target37_filtered_scaled_full/`, `mlp_noisy_target37_filtered_scaled_full/` |
-| Target37 Mask6 | 37 / `target37_mask6` | Six standardized base-motion slots set to zero after scaling | **Implemented, not trained; no checkpoint found** |
 
-The masked/filtered slots are `base_vx`, `base_vy`, `base_yaw_rate`, `base_ax`,
+The filtered slots are `base_vx`, `base_vy`, `base_yaw_rate`, `base_ax`,
 `base_ay` and `base_yaw_acc`. Arm and Target37 geometry features are unchanged.
 History and filter state reset between trajectories and continue across CSV chunks.
 
@@ -281,7 +280,9 @@ with open(sys.argv[1], encoding="utf-8-sig") as handle:
 print("Target:", book["identity"]["target_id"],
       "Observations:", book["identity"]["observations"])
 for name, episode in book["episodes"].items():
-    print(name, "strict_success:", episode.get("strict_success"),
+    print(name, "best_true_ee_error_m:", episode.get("best_true_ee_error_m", "not recorded"),
+          "ee_success_5cm:", episode.get("ee_success_5cm", "not recorded"),
+          "ee_success_10cm:", episode.get("ee_success_10cm", "not recorded"),
           "navigation_timeout:", episode.get("navigation_timeout"),
           "stop:", episode.get("stop_reason"))
 PY
@@ -313,9 +314,9 @@ This single-controller command does not produce the historical three-controller
 comparison figure.
 
 GUI playback affects wall-clock speed, not the 1 ms simulation timestep.
-Strict success requires base-goal error <0.08 m, heading error <0.05 rad, true
-end-effector error ≤0.01 m, time >8 s and no navigation timeout or guard violation.
-The original collection-success flag is reported separately.
+Performance uses the best true EE distance observed during the episode:
+`ee_success_5cm` means strictly <0.05 m and `ee_success_10cm` means strictly
+<0.10 m. Legacy strict/collection fields remain for provenance and stopping only.
 
 Source/checkpoint compatibility checks remain active. If they reject a run, stop
 and inspect the mismatch; do not replace hashes, overwrite history or bypass checks.
@@ -351,7 +352,7 @@ Clean Goal35/History70 require full training. Target37 and Target37 Filtered req
 the full scaled CPU configuration shown above, with the selected condition.
 Their Noisy runs require an output prefix `mlp_noisy_<feature-set>_`;
 Clean Goal35/History70/Target37 variants require their exact directories listed
-in the experiment table. Target37 Mask6 remains Noisy-only and is not a trained model.
+in the experiment table.
 The CLI rejects existing output directories.
 
 ## Reproducibility and provenance
@@ -472,7 +473,7 @@ python ./final/robotnik_arm_task/train_mlp.py \
 --target-id 46 --observations noisy --no-save
 ```
 
-### 7. Target37 — Target 48
+### 7. Target37 — Target 3
 
 Added four target-relative features: body-frame X/Y position, planar distance and heading error.
 
@@ -480,7 +481,7 @@ Added four target-relative features: body-frame X/Y position, planar distance an
 PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
 python ./final/robotnik_arm_task/train_mlp.py \
 --closed-loop --gui --playback-speed 3 \
---controller target37 --target-id 48 \
+--controller target37 --target-id 3 \
 --observations noisy --no-save
 ```
 
@@ -496,9 +497,55 @@ python ./final/robotnik_arm_task/train_mlp.py \
 --observations noisy --no-save
 ```
 
-### Strict Success Rate — Multiple Targets
+### EE Proximity Success — Single and Multiple Targets
 
-To calculate success rate, replace `--target-id` with `--target-ids` and specify multiple validation targets.
+All closed-loop controllers (Original Expert, Clean/Noisy MLP, Goal35, History70,
+Target37 and Target37 Filtered), plus Expert 2 reporting, use only these two
+performance metrics:
+
+- `ee_success_5cm`: minimum true EE distance during the episode is strictly <0.05 m.
+- `ee_success_10cm`: minimum true EE distance during the episode is strictly <0.10 m.
+
+These are closest-approach metrics, not final-position or full-task success.
+Reaching <5 cm always also counts toward <10 cm. There are no base-position,
+heading, navigation-completion, time or safety-success conditions in these flags.
+They use ground-truth EE error at every observed 1 ms step, including the terminal
+observation, never noisy measured EE error or just the saved 10 ms trace.
+Stopping conditions, noise, predictions and safety guards remain unchanged.
+
+Terminal output preserves the complete original `stop_reason`, including any
+closest-pose time, best EE error and current EE error in the stopping message.
+Those stopping diagnostics use measured EE observations and their existing
+improvement policy. The separately labelled minimum true EE error is the
+ground-truth closest approach used exclusively for the two proximity metrics.
+
+Each episode reports target ID, controller, best true error in metres and
+centimetres, both proximity flags, and evaluation status. Per-model summaries
+report completed target counts, counts reaching each threshold, and percentages.
+Missing checkpoints, interrupted runs and guard failures are listed separately;
+partial observations can retain proximity flags but do not enter completed-target
+rates. No completed targets means unavailable rates, not 0%. Genuine short
+interface checks are not evaluated; full Expert qualification/collection episodes
+are assessed independently of their internal `interface_steps` setting.
+Completed status is published only after checkpoint/source integrity checks pass.
+Expert 2 custom tasks are labelled without a
+Validation target ID and must not be pooled with Validation-target comparisons.
+
+Existing benchmark tolerance calculations and historical compatibility fields
+remain available internally for diagnostics and provenance. They are excluded
+from the primary EE proximity performance summary.
+
+New reports/figures use `_ee_proximity_v2` filenames; historical results remain
+untouched. Legacy `strict_success` fields remain for research provenance and
+stopping logic, not as primary model-performance reports. Historical reports
+without the new fields show "not recorded"; sampled traces are not backfilled.
+
+For Target37 on Validation Target 3, a best true error of about 0.01667 m
+(1.667 cm) counts toward both thresholds regardless of the final EE error.
+
+To compare targets, replace `--target-id` with `--target-ids` and specify multiple
+Validation targets. Use the same target IDs and observation conditions for every
+model; compare both proximity rates alongside completed counts and failures.
 
 Example for Baseline33 Noisy:
 
@@ -510,7 +557,10 @@ python ./final/robotnik_arm_task/train_mlp.py \
 --observations noisy --no-save
 ```
 
-The terminal reports success/failure for each episode and the overall strict success rate.
+The terminal reports every target and the per-model <5 cm and <10 cm counts and
+success rates, with evaluation failures listed separately. `--no-save` comparisons
+print the report without writing files; saved single-target reports include the
+same metrics and per-model aggregates.
 
 For a fair comparison, evaluate all controllers using the same validation target IDs and observation conditions.
 

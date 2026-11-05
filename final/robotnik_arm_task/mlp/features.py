@@ -20,14 +20,11 @@ TARGET_FEATURE_POLICY = ('target37_v1: baseline inputs cast to float32 first; ge
     'body_x=cos(psi)*dx+sin(psi)*dy; body_y=-sin(psi)*dx+cos(psi)*dy; '
     'distance=hypot(dx,dy); error=atan2(dy,dx)-psi; heading=atan2(sin(error),cos(error)); '
     'heading=0 when dx=dy=0 after float32 input casting; append four float32 features.')
-TARGET37_MASK_NAMES = ['base_vx','base_vy','base_yaw_rate','base_ax','base_ay','base_yaw_acc']
-TARGET37_MASK_POLICY = dict(version=1,feature_names=TARGET37_MASK_NAMES,
-    indices=[TARGET_INPUTS.index(name) for name in TARGET37_MASK_NAMES],index_base=0,
-    timing='after training-fitted input StandardScaler and float32 conversion',value=0.0,input_width=37)
+TARGET37_MOTION_NAMES = ['base_vx','base_vy','base_yaw_rate','base_ax','base_ay','base_yaw_acc']
 TARGET37_FILTER_POLICY = dict(version=1,type='two cascaded exponential pose smoothers, then backward differences',
     dt_s=.001,tau_per_stage_s=.020,alpha_formula='1-exp(-dt/tau)',stages=2,
-    pose_features=['base_x','base_y','base_yaw'],feature_names=TARGET37_MASK_NAMES.copy(),
-    indices=[TARGET_INPUTS.index(name) for name in TARGET37_MASK_NAMES],index_base=0,
+    pose_features=['base_x','base_y','base_yaw'],feature_names=TARGET37_MOTION_NAMES.copy(),
+    indices=[TARGET_INPUTS.index(name) for name in TARGET37_MOTION_NAMES],index_base=0,
     angular_policy='accumulate atan2(sin(yaw-prev_yaw),cos(yaw-prev_yaw)) before smoothing',
     startup='seed both stages with first measured pose; first velocity and acceleration zero',
     reset='each independent trajectory/episode; preserve state across CSV chunks',
@@ -118,7 +115,7 @@ def model_features(observations, feature_set='baseline33', base_filter=None, sta
         if not isinstance(base_filter,CausalBaseFilter):
             raise ValueError('Target37 filtered requires a persistent CausalBaseFilter, reset each trajectory')
         return base_filter.build(x,start_step)
-    if feature_set in ('target37','target37_mask6'):
+    if feature_set=='target37':
         dx = x[:,17].astype(np.float64)-x[:,0].astype(np.float64)
         dy = x[:,18].astype(np.float64)-x[:,1].astype(np.float64)
         psi = x[:,2].astype(np.float64)
@@ -149,12 +146,6 @@ def model_features(observations, feature_set='baseline33', base_filter=None, sta
 
 def transform(x, scaler, feature_set='baseline33'):
     result = x if scaler is None else scaler.transform(x).astype(np.float32, copy=False)
-    if feature_set=='target37_mask6':
-        if scaler is None or result.ndim!=2 or result.shape[1]!=len(TARGET_INPUTS):
-            raise ValueError('Target37 masking requires scaled N-by-37 features')
-        # Copy only the scaled array: raw observations and scaler statistics stay intact.
-        result = result.copy()
-        result[:,TARGET37_MASK_POLICY['indices']] = np.float32(0.0)
     return result
 
 

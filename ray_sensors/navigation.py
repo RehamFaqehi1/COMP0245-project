@@ -98,6 +98,7 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
     from simulation_and_control import MotorCommands, PinWrapper
     from result_paths import RESULTS, METADATA, DATASETS
     from mlp.features import INPUTS, OUTPUTS
+    from mlp.reporting import ee_proximity, proximity_summary, print_proximity_report
     task_id = 'custom_bearing28_base4m_v1'
     manifest_path = RESULTS / METADATA / 'pipeline_manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8-sig'))
@@ -475,6 +476,11 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
                 handle.flush()
                 record['sources_unchanged'] = all(digest(p) == value for p, value in identities.items())
                 record['strict_success'] = bool(record['strict_success'] and record['sources_unchanged'])
+                record.update(ee_proximity(record.get('minimum_true_ee_error_m')))
+                record['target_id'] = None  # Custom task is not a Validation target.
+                record['evaluation_status'] = ('completed' if record['status']=='completed'
+                    and record['sources_unchanged'] and record['avoidance']['contact_steps']==0 else 'failed')
+                record['ee_proximity_summary'] = proximity_summary([record])
                 record['reaching']['terminal_within_1cm'] = record.get('terminal', {}).get('true_ee_error_m', math.inf) <= .01
                 with (output / 'manifest.json').open('x', encoding='utf-8') as report:
                     json.dump(record, report, indent=2, allow_nan=False)
@@ -483,7 +489,8 @@ def custom_rollout(args, output, robo, task, np, expert, pb):
                     json.dump(dict(task=record, trace=trace, transitions_sha256=digest(output / 'transitions.csv')),
                               report, indent=2, allow_nan=False)
                     report.write('\n')
-    print(task_id, 'Strict Success:', record['strict_success'], 'Saved:', output)
+    print_proximity_report([record])
+    print(task_id, 'Saved:', output)
 
 
 def main():
@@ -550,6 +557,7 @@ def main():
         custom_rollout(args, output, robo, task, np, expert, pb)
         return
     import train_mlp as runner
+    from mlp.reporting import ee_proximity, proximity_summary, print_proximity_report
     from result_paths import RESULTS, METADATA, DATASETS
     for module, expected in (
             (runner, task / 'train_mlp.py'), (expert, task / 'robotnik_arm_control.py'),
@@ -929,7 +937,8 @@ def main():
             if args.gui:
                 sys.argv.append('--gui')
             record['status'] = 'running'
-            outcome = runner.closed_loop_main()
+            outcome = {}
+            runner.closed_loop_main(evaluation_record=outcome)
             record['status'] = 'completed'
             record['reaching']['true_ee_within_1cm'] = outcome.get('terminal', {}).get('true_ee_error_m', math.inf) <= .01
             record['strict_success'] = bool(outcome.get('strict_success') and
@@ -953,6 +962,12 @@ def main():
                 record['rows'] = state['rows']
                 record['sources_unchanged'] = all(digest(p) == value for p, value in identities.items())
                 record['strict_success'] &= record['sources_unchanged']
+                record.update(ee_proximity((outcome or {}).get('minimum_true_ee_error_m')))
+                record['evaluation_failure'] = record.get('error', (outcome or {}).get('evaluation_failure'))
+                record['evaluation_status'] = ('completed' if record['status']=='completed'
+                    and (outcome or {}).get('evaluation_status')=='completed'
+                    and record['sources_unchanged'] and record['avoidance']['contact_steps']==0 else 'failed')
+                record['ee_proximity_summary'] = proximity_summary([record])
                 record['qualified_for_review'] = record['strict_success']
                 record['avoidance']['completed_without_contact'] = bool(
                     record['status'] == 'completed' and record['navigation']['normal_completion']
@@ -966,7 +981,8 @@ def main():
                                    transitions_sha256=digest(output / 'transitions.csv')),
                               report, indent=2, allow_nan=False)
                     report.write('\n')
-    print('Expert 2 Strict Success:', record['strict_success'], 'Saved:', output)
+    print_proximity_report([record])
+    print('Expert 2 Saved:', output)
 
 
 if __name__ == '__main__':

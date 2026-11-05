@@ -29,20 +29,20 @@ if __package__:
     from .mlp.features import (
         INPUTS, OUTPUTS, HEADER, GOAL_INPUTS, TARGET_INPUTS, HISTORY_INPUTS,
         GOAL_FEATURE_POLICY, TARGET_FEATURE_POLICY, HISTORY_POLICY,
-        TARGET37_MASK_NAMES, TARGET37_MASK_POLICY, TARGET37_FILTER_POLICY,
+        TARGET37_FILTER_POLICY,
         CausalBaseFilter, History100, model_features, transform,
     )
-    from .mlp.reporting import evaluate
+    from .mlp.reporting import evaluate, ee_proximity, proximity_summary, print_proximity_report
     from .mlp.training import MLP
 else:
     from result_paths import RESULTS, DATASETS, EXPERIMENTS, EVALUATIONS, FIGURES, METADATA, HISTORICAL, COLLECTIONS
     from mlp.features import (
         INPUTS, OUTPUTS, HEADER, GOAL_INPUTS, TARGET_INPUTS, HISTORY_INPUTS,
         GOAL_FEATURE_POLICY, TARGET_FEATURE_POLICY, HISTORY_POLICY,
-        TARGET37_MASK_NAMES, TARGET37_MASK_POLICY, TARGET37_FILTER_POLICY,
+        TARGET37_FILTER_POLICY,
         CausalBaseFilter, History100, model_features, transform,
     )
-    from mlp.reporting import evaluate
+    from mlp.reporting import evaluate, ee_proximity, proximity_summary, print_proximity_report
     from mlp.training import MLP
 
 HIDDEN = (128, 128, 64)
@@ -56,14 +56,14 @@ def checkpoint_features(checkpoint):
     """Validate feature/history identity, including older checkpoints without new fields."""
     feature_set = checkpoint.get('feature_set','baseline33')
     names = {'baseline33':INPUTS,'goal35':GOAL_INPUTS,'history70':HISTORY_INPUTS,
-             'target37':TARGET_INPUTS,'target37_mask6':TARGET_INPUTS,'target37_filtered':TARGET_INPUTS}.get(feature_set)
+             'target37':TARGET_INPUTS,'target37_filtered':TARGET_INPUTS}.get(feature_set)
     if names is None or checkpoint['inputs']!=names:
         raise ValueError('Checkpoint feature order mismatch')
     if feature_set in ('goal35','history70') and checkpoint.get('feature_calculation')!=GOAL_FEATURE_POLICY:
         raise ValueError('Goal-feature calculation policy mismatch')
     if feature_set=='history70' and (checkpoint.get('history')!=HISTORY_POLICY or checkpoint.get('training_weighting') is not None):
         raise ValueError('History policy mismatch or unintended reaching weighting')
-    if feature_set in ('target37','target37_mask6','target37_filtered'):
+    if feature_set in ('target37','target37_filtered'):
         config = checkpoint['configuration']
         expected_config = dict(TARGET37_CONFIG)
         if feature_set in ('target37','target37_filtered') and config.get('condition')=='clean':
@@ -76,14 +76,6 @@ def checkpoint_features(checkpoint):
                 or checkpoint.get('training_weighting') is not None
                 or checkpoint.get('history') is not None):
             raise ValueError('Target37 feature policy/training configuration mismatch')
-    if feature_set=='target37_mask6':
-        if checkpoint.get('input_mask')!=TARGET37_MASK_POLICY:
-            raise ValueError('Target37 mask policy mismatch')
-        reference = checkpoint.get('scaler_reference',{})
-        if (reference.get('verification')!='exact training-fitted scaler equality'
-                or reference.get('preprocessing')!=checkpoint['preprocessing']
-                or not reference.get('checkpoint_sha256')):
-            raise ValueError('Target37 mask scaler-reference identity mismatch')
     if feature_set=='target37_filtered':
         reference = checkpoint.get('scaler_reference',{})
         if (checkpoint.get('input_filter')!=TARGET37_FILTER_POLICY or checkpoint.get('input_mask') is not None
@@ -297,7 +289,7 @@ def predict(checkpoint, observations, device='cpu', history=None, base_filter=No
     for parameters,n in ((info,width),(yi,11)):
         if parameters is None:
             continue
-        if feature_set in ('target37','target37_mask6','target37_filtered') and parameters.get('samples_seen')!=checkpoint['selected_training_samples']:
+        if feature_set in ('target37','target37_filtered') and parameters.get('samples_seen')!=checkpoint['selected_training_samples']:
             raise ValueError('Target37 scaler fitting sample count mismatch')
         for key in ('mean','scale','variance'):
             a = np.asarray(parameters[key],dtype=float)
@@ -331,7 +323,7 @@ def main():
     parser.add_argument('--results', type=Path, default=RESULTS)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--condition', choices=['clean','noisy'], default='clean')
-    parser.add_argument('--feature-set', choices=['baseline33','goal35','history70','target37','target37_mask6','target37_filtered'], default='baseline33',
+    parser.add_argument('--feature-set', choices=['baseline33','goal35','history70','target37','target37_filtered'], default='baseline33',
                         help='Select in-memory baseline/goal/history/target-relative features; CSV schema is unchanged.')
     parser.add_argument('--preprocessing', choices=['raw','scaled'], default='scaled', help='Causal smoothing deliberately deferred.')
     parser.add_argument('--full-train', action='store_true', help='Use all 350 training targets instead of the 36-target pilot.')
@@ -348,7 +340,7 @@ def main():
     args = parser.parse_args()
 
     # Model/training restrictions.
-    if args.feature_set in ('target37','target37_mask6','target37_filtered'):
+    if args.feature_set in ('target37','target37_filtered'):
         expected_config = dict(TARGET37_CONFIG)
         if args.feature_set in ('target37','target37_filtered') and args.condition=='clean':
             expected_config['condition'] = 'clean'
@@ -369,7 +361,7 @@ def main():
         parser.error('--pilot-cache-mib must be in 0..256 (hard safety cap)')
 
     # Dataset/provenance restrictions.
-    if args.feature_set in ('target37','target37_mask6','target37_filtered'):
+    if args.feature_set in ('target37','target37_filtered'):
         if args.results.resolve()!=TARGET37_DATA_ROOT.resolve():
             parser.error(f'target37 requires --results {TARGET37_DATA_ROOT}')
         # Bind local data to the original Baseline33 training provenance, not itself.
@@ -387,7 +379,7 @@ def main():
 
     # Output restrictions.
     output = args.output.resolve()
-    if args.feature_set in ('target37','target37_mask6','target37_filtered'):
+    if args.feature_set in ('target37','target37_filtered'):
         if args.feature_set in ('target37','target37_filtered') and args.condition=='clean':
             experiment = f'mlp_clean_{args.feature_set}_scaled_full'
             expected_output = (RESULTS/EXPERIMENTS/experiment).resolve()
@@ -484,7 +476,7 @@ def main():
     if not train_rows:
         raise ValueError('No selected training rows')
     scaler_reference = None
-    if args.feature_set in ('target37_mask6','target37_filtered'):
+    if args.feature_set=='target37_filtered':
         reference_path = RESULTS/EXPERIMENTS/f'mlp_{args.condition}_target37_scaled_full/best_model.pt'
         reference_hash = sha(reference_path)
         reference = torch.load(reference_path,map_location='cpu',weights_only=True)
@@ -496,20 +488,18 @@ def main():
                 or reference['split_validation_sha256']!=sha(args.results/METADATA/'split_validation.json')
                 or reference['selected_target_ids']!=sorted(selected)
                 or reference['selected_training_samples']!=train_rows
-                or (args.feature_set=='target37_mask6' and reference['preprocessing']['x_scaler']!=scaler_info(xs))
                 or reference['preprocessing']['y_scaler']!=scaler_info(ys)
                 or sha(reference_path)!=reference_hash):
-            raise ValueError('Filtered experiment requires original Target37 data/configuration/output-scaler agreement'
-                             if args.feature_set=='target37_filtered' else 'Mask6 requires exact original Target37 data/configuration/scaler agreement')
+            raise ValueError('Filtered experiment requires original Target37 data/configuration/output-scaler agreement')
         scaler_reference = dict(checkpoint=str(reference_path),checkpoint_sha256=reference_hash,
-            preprocessing=reference['preprocessing'],verification='exact training-fitted scaler equality' if args.feature_set=='target37_mask6'
-            else 'exact original Target37 output-scaler equality; new filtered training input scaler')
+            preprocessing=reference['preprocessing'],
+            verification='exact original Target37 output-scaler equality; new filtered training input scaler')
     output.mkdir(parents=True, exist_ok=False)
     versions = {name: importlib.metadata.version(name) for name in ['numpy','pandas','torch','scikit-learn','matplotlib']}
     config = {k: str(v) if isinstance(v,Path) else v for k,v in vars(args).items()}
     input_names = {'baseline33':INPUTS,'goal35':GOAL_INPUTS,'history70':HISTORY_INPUTS,
-                   'target37':TARGET_INPUTS,'target37_mask6':TARGET_INPUTS,'target37_filtered':TARGET_INPUTS}[args.feature_set]
-    input_units = list(manifest['schema']['input_units']) + (['m','m','m','rad'] if args.feature_set in ('target37','target37_mask6','target37_filtered')
+                   'target37':TARGET_INPUTS,'target37_filtered':TARGET_INPUTS}[args.feature_set]
+    input_units = list(manifest['schema']['input_units']) + (['m','m','m','rad'] if args.feature_set in ('target37','target37_filtered')
                     else ['m','rad'] if args.feature_set!='baseline33' else [])
     if args.feature_set=='history70':
         input_units = input_units*2
@@ -517,7 +507,7 @@ def main():
         raise ValueError('Input unit/schema length mismatch')
     metadata = dict(configuration=config, reference=ARCHITECTURE_SOURCE, inputs=input_names, outputs=OUTPUTS,
         feature_set=args.feature_set,input_units=input_units,output_units=['rad/s']*4+['Nm']*7,
-        feature_calculation=TARGET_FEATURE_POLICY if args.feature_set in ('target37','target37_mask6','target37_filtered') else GOAL_FEATURE_POLICY if args.feature_set!='baseline33' else 'Original ordered 33 inputs, float32 CSV loading',
+        feature_calculation=TARGET_FEATURE_POLICY if args.feature_set in ('target37','target37_filtered') else GOAL_FEATURE_POLICY if args.feature_set!='baseline33' else 'Original ordered 33 inputs, float32 CSV loading',
         training_cache=dict(status=cache_status, budget_mib=args.pilot_cache_mib,
                             retained_bytes=cache_bytes, chunks=len(train_cache)),
         hidden_layers=list(HIDDEN), selected_target_ids=sorted(selected),
@@ -532,9 +522,6 @@ def main():
         test_accessed=False, shuffle_policy='Seeded within each CSV chunk after trajectory selection')
     if args.feature_set=='target37':
         metadata['experimental_limitation'] = 'Hidden widths unchanged; 37 rather than 33 inputs add 512 first-layer weights and change seeded initialisation. Geometry does not expose Expert history.'
-    if args.feature_set=='target37_mask6':
-        metadata.update(input_mask=TARGET37_MASK_POLICY,scaler_reference=scaler_reference,
-            experimental_limitation='Same 37-slot architecture and scalers as Target37; six standardized base-motion inputs are zero. Hidden Expert history remains absent.')
     if args.feature_set=='target37_filtered':
         metadata.update(input_filter=TARGET37_FILTER_POLICY,scaler_reference=scaler_reference,
             experimental_limitation='Causal pose smoothing introduces approximately 40ms low-frequency delay; hidden Expert history remains absent. Input scaler fitted on filtered Training rows only.')
@@ -1116,14 +1103,14 @@ def all_conditions_main():
 
 
 # 7. Closed-loop simulation: imports and state are isolated from training.
-def closed_loop_main(qualification=None, dagger=None, episode_args=None):
+def closed_loop_main(qualification=None, dagger=None, episode_args=None, evaluation_record=None):
     from contextlib import nullcontext, redirect_stdout
     from io import StringIO
 
     parser = argparse.ArgumentParser(description='One closed-loop episode; finite-value checks, no training or dataset writes.')
     parser.add_argument('--closed-loop', action='store_true', required=True)
     parser.add_argument('--no-save', action='store_true', help='Run a full episode with a short terminal summary and no result files.')
-    parser.add_argument('--controller', choices=['expert','clean','noisy','goal35','history70','target37','target37_mask6','target37_filtered'], required=True,
+    parser.add_argument('--controller', choices=['expert','clean','noisy','goal35','history70','target37','target37_filtered'], required=True,
                         help='goal35 selects the separate full Goal-Aware Noisy checkpoint.')
     parser.add_argument('--goal35-checkpoint','--history70-checkpoint',dest='goal35_checkpoint',type=Path,
                         help='Explicit full Goal35 checkpoint for an isolated model-specific rollout; only with --controller goal35.')
@@ -1131,6 +1118,19 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                         help='Target37-family checkpoint; default: results/experiments/mlp_noisy_<controller>_scaled_full/best_model.pt.')
     parser.add_argument('--target37-output',type=Path,
                         help='Required unless --no-save for Target37-family: NEW <controller>_* evaluation directory directly under results/evaluations.')
+    parser.add_argument('--checkpoint',type=Path,help='Explicit full MLP checkpoint for a same-condition benchmark pilot.')
+    parser.add_argument('--training-condition',choices=['clean','noisy'],help='Expected checkpoint condition for the benchmark pilot.')
+    parser.add_argument('--benchmark-output',type=Path,help='NEW pilot directory directly under results/evaluations; single Validation target only.')
+    parser.add_argument('--benchmark-zero-wheels-after-nav',action='store_true',
+                        help='Target37 benchmark pilot ONLY: diagnostic zero applied wheels after observer navigation completion; retain predicted arm torques.')
+    parser.add_argument('--benchmark-record-kinematics',action='store_true',
+                        help='Target37 benchmark pilot ONLY: record true arm joints and base orientation without changing control.')
+    parser.add_argument('--benchmark-hybrid-target37',action='store_true',
+                        help='Noisy Filtered benchmark ONLY: use original Target37 arm predictions with Filtered wheel predictions.')
+    parser.add_argument('--benchmark-expert-base-learned-arm',action='store_true',
+                        help='Target28/Noisy pilot: Expert wheels with original Target37 Noisy arm predictions throughout.')
+    parser.add_argument('--benchmark-full-expert',action='store_true',
+                        help='Fresh matched Target28/Noisy Full Expert pilot; no checkpoint or training condition required.')
     parser.add_argument('--observations', choices=['clean','noisy'], default='clean')
     target_options = parser.add_mutually_exclusive_group()
     target_options.add_argument('--target-id', type=int, default=3)
@@ -1153,15 +1153,48 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             '--target-id',str(dagger['target_id'])] if dagger is not None else None if qualification is None else [
             '--closed-loop','--controller','expert','--observations',qualification['observations'],
             '--target-id',str(qualification['target_id'])])
+    benchmark = args.checkpoint is not None or args.training_condition is not None or args.benchmark_output is not None
+    expert_comparison = args.benchmark_full_expert or args.benchmark_expert_base_learned_arm
+    if expert_comparison:
+        if (not benchmark or args.benchmark_output is None or args.target_id!=28 or args.observations!='noisy'
+                or (args.benchmark_full_expert and args.benchmark_expert_base_learned_arm)
+                or args.benchmark_hybrid_target37 or args.benchmark_zero_wheels_after_nav):
+            parser.error('Expert comparison requires one Target28/Noisy pilot and a new output; omit other interventions')
+        if args.benchmark_full_expert:
+            if args.controller!='expert' or args.checkpoint is not None or args.training_condition is not None:
+                parser.error('--benchmark-full-expert requires --controller expert without checkpoint/training condition')
+        elif args.controller!='target37' or args.training_condition!='noisy':
+            parser.error('--benchmark-expert-base-learned-arm requires a Noisy target37 benchmark')
+        args.benchmark_record_kinematics = True
+    if args.benchmark_hybrid_target37:
+        if (not benchmark or args.controller!='target37_filtered' or args.training_condition!='noisy'
+                or args.benchmark_zero_wheels_after_nav or args.diagnostic_zero_wheels_after_nav):
+            parser.error('--benchmark-hybrid-target37 requires a Noisy target37_filtered benchmark without wheel interventions')
+    if args.benchmark_zero_wheels_after_nav and (not benchmark or args.controller!='target37'):
+        parser.error('--benchmark-zero-wheels-after-nav requires a --controller target37 benchmark pilot')
+    if args.benchmark_record_kinematics and (not benchmark or (args.controller!='target37' and not args.benchmark_hybrid_target37 and not args.benchmark_full_expert)):
+        parser.error('--benchmark-record-kinematics requires a Target37 or Hybrid Target37 benchmark pilot')
+    if benchmark:
+        if not args.benchmark_full_expert and (args.checkpoint is None or args.training_condition is None or args.benchmark_output is None):
+            parser.error('--checkpoint, --training-condition and --benchmark-output must be supplied together')
+        if ((args.controller=='expert' and not args.benchmark_full_expert) or args.target_ids is not None
+                or args.no_save or args.interface_steps or args.diagnostics or args.navigation_diagnostics
+                or args.diagnostic_zero_wheels_after_nav or args.goal35_checkpoint is not None
+                or args.target37_checkpoint is not None or args.target37_output is not None):
+            parser.error('Benchmark pilot requires one MLP, one Validation target and a normal saved episode; omit legacy checkpoint/output and diagnostic options')
+        if not args.benchmark_full_expert and args.observations!=args.training_condition:
+            parser.error('Primary benchmark requires observations matching --training-condition')
+        if args.controller in ('clean','noisy') and args.controller!=args.training_condition:
+            parser.error('Baseline controller must match --training-condition')
     if args.target_ids is not None and not args.no_save:
         parser.error('--target-ids requires --no-save')
     if args.no_save and (args.interface_steps or args.diagnostics or args.navigation_diagnostics or args.diagnostic_zero_wheels_after_nav):
         parser.error('--no-save requires a normal full episode; omit interface and diagnostic options')
     history70 = args.controller == 'history70'
     goal35 = args.controller in ('goal35','history70')
-    target37 = args.controller in ('target37','target37_mask6','target37_filtered')
+    target37 = args.controller in ('target37','target37_filtered')
     if target37:
-        if args.target37_output is None and not args.no_save:
+        if args.target37_output is None and not args.no_save and not benchmark:
             parser.error('--controller target37 requires --target37-output')
         if args.diagnostics or args.navigation_diagnostics or args.diagnostic_zero_wheels_after_nav:
             parser.error('target37 supports ordinary closed-loop episodes/interface checks only')
@@ -1185,7 +1218,12 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
     task = Path(__file__).resolve().parent
     root, robo = RESULTS, task.parents[1]/'RoboEnv'
     evaluation_output = root/EVALUATIONS
-    if target37 and not args.no_save:
+    if benchmark:
+        evaluation_output = args.benchmark_output.resolve()
+        if (evaluation_output.parent!=(root/EVALUATIONS).resolve() or evaluation_output.exists()
+                or args.benchmark_output.is_symlink()):
+            parser.error('--benchmark-output must be a NEW directory directly under results/evaluations')
+    elif target37 and not args.no_save:
         evaluation_output = args.target37_output.resolve()
         evaluation_prefix = args.controller+'_'
         if (evaluation_output.parent!=(root/EVALUATIONS).resolve() or not evaluation_output.name.startswith(evaluation_prefix)
@@ -1200,21 +1238,31 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             parser.error(f'Targets outside the Validation split: {invalid}')
         manifest_hash = sha(root/METADATA/'pipeline_manifest.json')
         reference_checkpoint = None
-        successes = 0
-        for index,target_id in enumerate(args.target_ids):
+        outcomes = []
+        for target_id in args.target_ids:
             episode = argparse.Namespace(**vars(args))
             episode.target_id,episode.target_ids = target_id,None
-            outcome = closed_loop_main(episode_args=episode)
-            if index==0:
-                reference_checkpoint = outcome['checkpoint_sha256']
-            if (outcome['checkpoint_sha256']!=reference_checkpoint
-                    or sha(root/METADATA/'pipeline_manifest.json')!=manifest_hash):
-                raise RuntimeError('Checkpoint or manifest changed between comparison episodes')
-            successes += outcome['strict_success'] is True
-        total = len(args.target_ids)
-        print(f'Controller: {args.controller} | Observations: {args.observations} | '
-              f'Successful: {successes} | Failed: {total-successes} | '
-              f'Strict success rate: {successes}/{total} ({successes/total:.1%})')
+            outcome = {}
+            try:
+                outcome = closed_loop_main(episode_args=episode,evaluation_record=outcome)
+                if outcome is None:
+                    raise RuntimeError('No completed evaluation result')
+                if reference_checkpoint is None:
+                    reference_checkpoint = outcome['checkpoint_sha256']
+                if (outcome['checkpoint_sha256']!=reference_checkpoint
+                        or sha(root/METADATA/'pipeline_manifest.json')!=manifest_hash):
+                    raise RuntimeError('Checkpoint or manifest changed between comparison episodes')
+            except (Exception, KeyboardInterrupt, SystemExit) as exc:
+                outcome.update(target_id=target_id,controller=args.controller,evaluation_status='failed',
+                    evaluation_failure=f'{type(exc).__name__}: {exc}',
+                    **ee_proximity(outcome.get('minimum_true_ee_error_m')))
+                outcomes.append(outcome)
+                if isinstance(exc,(KeyboardInterrupt,SystemExit)):
+                    print_proximity_report(outcomes)
+                    raise
+                continue
+            outcomes.append(outcome)
+        print_proximity_report(outcomes)
         return
     if args.target_id not in manifest['splits']['train' if qualification is not None or dagger is not None else 'validation']:
         parser.error('Target is outside the permitted Training-collection/Validation-evaluation split')
@@ -1265,12 +1313,118 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         checkpoint_path = (args.target37_checkpoint.resolve() if args.target37_checkpoint is not None
                            else root/EXPERIMENTS/f'mlp_noisy_{args.controller}_scaled_full/best_model.pt')
         feature_set,model_inputs = args.controller,TARGET_INPUTS
+    if benchmark and not args.benchmark_full_expert:
+        checkpoint_path = args.checkpoint.resolve()
+        checkpoint_condition = args.training_condition
+        if args.benchmark_expert_base_learned_arm and checkpoint_path!=(root/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt').resolve():
+            raise ValueError('Expert-base pilot requires the original Target37 Noisy checkpoint')
+    benchmark_sources = {}
+    if args.benchmark_full_expert:
+        feature_set,checkpoint_condition = 'expert',None
+        if load_json(root/METADATA/'split_validation.json').get('valid') is not True:
+            raise ValueError('Invalid matched Expert split record')
+        benchmark_sources = {path:sha(path) for path in deployment_sources+[
+            root/METADATA/'pipeline_manifest.json',root/METADATA/'split_validation.json',
+            root/DATASETS/'targets_500.csv']}
+    hybrid_model = hybrid_xs = hybrid_ys = None
     model = xs = ys = None
     shadow_model = None
     checkpoint_hash = None
     if args.controller != 'expert' or args.diagnostics:
         checkpoint_hash = sha(checkpoint_path)
         ck = torch.load(checkpoint_path,map_location='cpu',weights_only=True)
+        if benchmark:
+            checkpoint_features(ck)
+            metrics_path = checkpoint_path.parent/'metrics.json'
+            benchmark_sources[metrics_path] = sha(metrics_path)
+            saved = load_json(metrics_path)
+            for key,value in ck.items():
+                if key=='model_state_dict' or (key=='history' and feature_set=='history70'):
+                    continue
+                if key not in saved or saved[key]!=value:
+                    raise ValueError(f'Checkpoint/metrics provenance mismatch: {key}')
+            split_record = load_json(root/METADATA/'split_validation.json')
+            train_ids,val_ids,test_ids = (manifest['splits'][s] for s in ('train','validation','test'))
+            if (split_record.get('valid') is not True
+                    or [len(ids) for ids in (train_ids,val_ids,test_ids)]!=[350,75,75]
+                    or [len(set(ids)) for ids in (train_ids,val_ids,test_ids)]!=[350,75,75]
+                    or set(train_ids)|set(val_ids)|set(test_ids)!=set(range(1,501))
+                    or set(train_ids)&set(val_ids) or set(train_ids)&set(test_ids) or set(val_ids)&set(test_ids)
+                    or ck['configuration'].get('full_train') is not True or ck.get('test_accessed') is not False
+                    or ck['selected_target_ids']!=sorted(train_ids)
+                    or ck['split_validation_sha256']!=sha(root/METADATA/'split_validation.json')
+                    or ck['selected_training_samples']!=split_record['rows'][checkpoint_condition]['train']
+                    or saved['training']['samples']!=ck['selected_training_samples']
+                    or saved['validation']['samples']!=split_record['rows'][checkpoint_condition]['validation']):
+                raise ValueError('Benchmark Training/Validation split or sample provenance mismatch')
+            for split in ('train','validation'):
+                rel = f'processed_data/{split}_{checkpoint_condition}.csv'
+                expected_hash = {k.replace('\\','/'):v for k,v in split_record['output_sha256'].items()}[rel]
+                if ck['input_sha256'][split]!=expected_hash:
+                    raise ValueError('Benchmark recorded dataset SHA256 mismatch')
+            weighting = ck.get('training_weighting')
+            if ck['configuration'].get('weight_reaching',False):
+                _,metadata_path = completion_steps(root,checkpoint_condition,set(train_ids))
+                benchmark_sources[metadata_path] = sha(metadata_path)
+                if (feature_set!='goal35' or not isinstance(weighting,dict)
+                        or weighting.get('navigation')!=1. or weighting.get('reaching')!=2.
+                        or weighting.get('metadata_sha256')!=benchmark_sources[metadata_path]):
+                    raise ValueError('Reaching2 metadata/weighting provenance mismatch')
+            elif weighting is not None:
+                raise ValueError('Unexpected benchmark training weighting')
+            if feature_set=='target37_filtered':
+                reference_path = root/EXPERIMENTS/f'mlp_{checkpoint_condition}_target37_scaled_full/best_model.pt'
+                benchmark_sources[reference_path] = sha(reference_path)
+                reference = torch.load(reference_path,map_location='cpu',weights_only=True)
+                if (checkpoint_features(reference)[0]!='target37'
+                        or reference['configuration']['condition']!=checkpoint_condition
+                        or reference['outputs']!=OUTPUTS or reference['hidden_layers']!=list(HIDDEN)
+                        or reference.get('test_accessed') is not False
+                        or reference['input_sha256']!=ck['input_sha256']
+                        or reference['manifest_sha256']!=ck['manifest_sha256']
+                        or reference['split_validation_sha256']!=ck['split_validation_sha256']
+                        or reference['selected_target_ids']!=ck['selected_target_ids']
+                        or reference['selected_training_samples']!=ck['selected_training_samples']
+                        or ck['scaler_reference']['checkpoint_sha256']!=benchmark_sources[reference_path]
+                        or ck['scaler_reference']['preprocessing']!=reference['preprocessing']
+                        or ck['preprocessing']['y_scaler']!=reference['preprocessing']['y_scaler']):
+                    raise ValueError('Filtered same-condition Target37 reference mismatch')
+                if args.benchmark_hybrid_target37:
+                    original_wheels = root/EXPERIMENTS/'mlp_noisy_target37_filtered_scaled_full/best_model.pt'
+                    if checkpoint_path!=original_wheels.resolve():
+                        raise ValueError('Hybrid pilot requires the original Filtered Noisy checkpoint')
+                    reference_metrics_path = reference_path.parent/'metrics.json'
+                    benchmark_sources[reference_metrics_path] = sha(reference_metrics_path)
+                    reference_metrics = load_json(reference_metrics_path)
+                    for key,value in reference.items():
+                        if key!='model_state_dict' and (key not in reference_metrics or reference_metrics[key]!=value):
+                            raise ValueError(f'Hybrid arm checkpoint/metrics mismatch: {key}')
+                    if (reference.get('input_units')!=manifest['schema']['input_units']+['m','m','m','rad']
+                            or reference.get('output_units')!=['rad/s']*4+['Nm']*7
+                            or reference_metrics['training']['samples']!=reference['selected_training_samples']
+                            or reference_metrics['validation']['samples']!=split_record['rows']['noisy']['validation']):
+                        raise ValueError('Hybrid arm schema/sample provenance mismatch')
+                    hybrid_scalers = []
+                    for key,width in (('x_scaler',37),('y_scaler',11)):
+                        info = reference['preprocessing'][key]
+                        arrays = [np.asarray(info[k],dtype=float) for k in ('mean','scale','variance')]
+                        if (info['samples_seen']!=reference['selected_training_samples']
+                                or any(a.shape!=(width,) or not np.isfinite(a).all() for a in arrays)
+                                or np.any(arrays[1]<=0) or np.any(arrays[2]<0)):
+                            raise ValueError('Invalid hybrid arm training-fitted scaler')
+                        scaler = StandardScaler()
+                        scaler.mean_,scaler.scale_,scaler.var_ = arrays
+                        scaler.n_features_in_ = width
+                        hybrid_scalers.append(scaler)
+                    hybrid_xs,hybrid_ys = hybrid_scalers
+                    hybrid_model = MLP(37)
+                    hybrid_model.load_state_dict(reference['model_state_dict'],strict=True)
+                    if any(not torch.isfinite(p).all().item() for p in hybrid_model.parameters()):
+                        raise ValueError('Nonfinite hybrid arm checkpoint parameters')
+                    hybrid_model.eval()
+            benchmark_sources[checkpoint_path] = checkpoint_hash
+            for name in ('pipeline_manifest.json','split_validation.json'):
+                benchmark_sources[root/METADATA/name] = sha(root/METADATA/name)
         if goal35 or target37:
             checkpoint_features(ck)
         if (ck['inputs'] != model_inputs or ck['outputs'] != OUTPUTS or ck['hidden_layers'] != list(HIDDEN)
@@ -1286,11 +1440,11 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                     or ck.get('output_units')!=['rad/s']*4+['Nm']*7
                     or ck['selected_target_ids']!=sorted(manifest['splits']['train'])
                     or ck['split_validation_sha256']!=sha(root/METADATA/'split_validation.json')
-                    or ck['selected_training_samples']!=split_record['rows']['noisy']['train']
+                    or ck['selected_training_samples']!=split_record['rows'][checkpoint_condition]['train']
                     or ck.get('test_accessed') is not False):
                 raise ValueError('Target37 training/feature provenance mismatch')
             for split in ('train','validation'):
-                rel = f'processed_data/{split}_noisy.csv'
+                rel = f'processed_data/{split}_{checkpoint_condition}.csv'
                 recorded_hash = split_record['output_sha256'].get(rel,split_record['output_sha256'].get(rel.replace('/','\\')))
                 if recorded_hash is None or ck['input_sha256'][split]!=recorded_hash:
                     raise ValueError('Target37 recorded training/validation dataset identity mismatch')
@@ -1303,17 +1457,17 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                     or ck['configuration'].get('full_train') is not True
                     or ck['selected_target_ids'] != sorted(manifest['splits']['train'])
                     or ck['split_validation_sha256'] != sha(root/METADATA/'split_validation.json')
-                    or ck['selected_training_samples'] != split_record['rows']['noisy']['train']):
+                    or ck['selected_training_samples'] != split_record['rows'][checkpoint_condition]['train']):
                 raise ValueError('Goal35 training/feature provenance mismatch')
             for split in ('train','validation'):
-                rel = f'processed_data/{split}_noisy.csv'
+                rel = f'processed_data/{split}_{checkpoint_condition}.csv'
                 recorded_hash = split_record['output_sha256'].get(rel,split_record['output_sha256'].get(rel.replace('/','\\')))
                 if ck['input_sha256'][split] != recorded_hash:
                     raise ValueError('Goal35 recorded training/validation dataset identity mismatch')
         scalers = []
         for key,width in [('x_scaler',len(model_inputs)),('y_scaler',11)]:
             info = ck['preprocessing'][key]
-            if (goal35 or target37) and info['samples_seen'] != ck['selected_training_samples']:
+            if (goal35 or target37 or benchmark) and info['samples_seen'] != ck['selected_training_samples']:
                 raise ValueError('Target37 scaler fitting sample count mismatch' if target37 else 'Goal35 scaler fitting sample count mismatch')
             arrays = [np.asarray(info[k],dtype=float) for k in ('mean','scale','variance')]
             if any(a.shape != (width,) or not np.isfinite(a).all() for a in arrays) or np.any(arrays[1]<=0) or np.any(arrays[2]<0):
@@ -1325,6 +1479,8 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         xs,ys = scalers
         model = MLP(len(model_inputs))
         model.load_state_dict(ck['model_state_dict'],strict=True)
+        if benchmark and any(not torch.isfinite(p).all().item() for p in model.parameters()):
+            raise ValueError('Nonfinite benchmark checkpoint parameters')
         model.eval()
         if args.controller == 'expert':
             shadow_model,model = model,None
@@ -1346,12 +1502,16 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         summary = root/EVALUATIONS/f'closed_loop_history70_{checkpoint_hash[:12]}_target{args.target_id}_{args.observations}.json'
     if target37:
         summary = evaluation_output/f'closed_loop_{feature_set}_{checkpoint_hash[:12]}_target{args.target_id}_{args.observations}.json'
+    if benchmark:
+        summary = evaluation_output/'pilot.json'
+    summary = summary.with_name(summary.stem+'_ee_proximity_v2'+summary.suffix)
     plot = root/FIGURES/(summary.stem+'.png')
     identity = dict(target_id=args.target_id,target_xyz=target.tolist(),observations=args.observations,
         seed=int((42+args.target_id*104729+19937)%2**32),
         manifest_sha256=sha(root/METADATA/'pipeline_manifest.json'),config_sha256=sha(config_path),
         controller_sha256=sha(task/'robotnik_arm_control.py'),simulator_sha256=sha(expected),
         runner_sha256=sha(__file__),dt=.001,
+        evaluation_policy='ee_proximity_v2: minimum true EE error over all observed 1ms steps, including terminal; strictly <0.05m and <0.10m; no base, heading, navigation or time requirements; failed attempts excluded from completed-target rates',
         command_policy='Finite-value validation only; no custom command envelopes, clipping or joint-position aborts. Original simulator behaviour retained.',
         production_source_sha256=source_hashes,
         trace_policy='Every 10ms plus terminal observation; differences on shared sampled times, not identical states.')
@@ -1363,10 +1523,48 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             training_data_sha256=ck['input_sha256'],training_target_ids=ck['selected_target_ids'])
         if history70:
             identity['history'] = ck['history']
-        if feature_set=='target37_mask6':
-            identity.update(input_mask=ck['input_mask'],scaler_reference=ck['scaler_reference'])
         if feature_set=='target37_filtered':
             identity.update(input_filter=ck['input_filter'],scaler_reference=ck['scaler_reference'])
+    if benchmark:
+        identity.update(mode='same_condition_single_target_pilot',training_condition=checkpoint_condition,
+            feature_set=feature_set,inputs=model_inputs,outputs=OUTPUTS,
+            checkpoint=None if args.benchmark_full_expert else str(checkpoint_path),checkpoint_sha256=checkpoint_hash,
+            training_weighting=None if args.benchmark_full_expert else ck.get('training_weighting'),
+            training_data_sha256=None if args.benchmark_full_expert else ck['input_sha256'],
+            split_validation_sha256=sha(root/METADATA/'split_validation.json') if args.benchmark_full_expert else ck['split_validation_sha256'],
+            verified_sources={str(p):digest for p,digest in benchmark_sources.items()},
+            dataset_verification='Recorded Train/Validation hashes checked against verified split metadata; no Test CSV opened.')
+        identity['stopping_policy'] = dict(name='original_closed_loop_v1',
+            strict_success='True base-goal error <0.08m, heading error <0.05rad, true EE error <=0.01m, time >8s, no navigation timeout or finite-value failure.',
+            termination='Existing strict-success, time-cap, finite-value and Expert check_stop rules retained, including measured success and measured-error stall.',
+            warning='Measured success can terminate before true-state Strict Success; failure at this stop does not establish failure over a full horizon.')
+        print('Pilot stopping policy:',identity['stopping_policy']['warning'])
+        if expert_comparison:
+            identity.update(mode='matched_full_expert_pilot' if args.benchmark_full_expert else 'expert_base_learned_arm_pilot',
+                command_policy='Full Expert wheels and arm.' if args.benchmark_full_expert else
+                    'DIAGNOSTIC mixed controller: Expert wheels; unchanged Target37 Noisy arm predictions active throughout, with no added arm hold.',
+                expert_comparison_trace_policy='Every 10ms plus terminal: controller predictions, Expert wheel commands, applied commands and true joint/base kinematics. Unapplied terminal commands are null.')
+            if args.benchmark_full_expert:
+                identity['dataset_verification'] = 'Target plan and production sources verified; valid split record and Validation target required. No checkpoint or Test CSV used.'
+        if args.benchmark_hybrid_target37:
+            identity.update(mode='hybrid_target37_noisy_single_target_pilot',
+                command_policy='HYBRID CONTROLLER, not an original pretrained policy: Filtered Noisy wheels and Target37 Noisy arm torques, each with its own features and scalers on the same observation.',
+                hybrid_models=dict(
+                    wheels=dict(checkpoint=str(checkpoint_path),checkpoint_sha256=checkpoint_hash,
+                        feature_set='target37_filtered',preprocessing=ck['preprocessing'],input_filter=ck['input_filter']),
+                    arm=dict(checkpoint=str(reference_path),checkpoint_sha256=benchmark_sources[reference_path],
+                        feature_set='target37',preprocessing=reference['preprocessing'])),
+                hybrid_trace_policy='Every 10ms plus terminal observation; both raw 11-output predictions and combined commands. Applied fields are null on unapplied terminal rows.')
+        if args.benchmark_zero_wheels_after_nav:
+            identity.update(mode='diagnostic_zero_wheels_after_nav_single_target_pilot',
+                command_policy='DIAGNOSTIC intervention, not the original learned policy: unmodified predictions before nav.done; zero four applied wheels after nav.done, seven predicted arm torques unchanged.',
+                intervention_trace_policy='Every 10ms, first applied intervention and terminal observation; commands are raw predictions, applied commands are recorded only after a completed simulation step.')
+        if args.benchmark_record_kinematics:
+            identity['kinematic_diagnostics'] = dict(record_only=True,
+                arm_joint_order=[f'arm_q{i}' for i in range(1,8)],arm_joint_units='rad',
+                base_orientation='PyBullet world-frame quaternion [x, y, z, w]',
+                sampling='Pre-step true state at existing 10ms trace points, intervention onset if enabled, and terminal observation; no additional state queries or random draws.',
+                commands='commands/predicted_wheels are raw predictions; applied fields are null on unapplied terminal rows.')
     book = dict(identity=identity,episodes={})
     if qualification is not None:
         # Suppress evaluation-result handling. Stopping below still follows the
@@ -1378,7 +1576,8 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         reference_book = load_json(reference_path)
         reference_identity = {k:v for k,v in reference_book['identity'].items() if k!='runner_sha256'}
         current_reference_identity = ({k:identity.get(k) for k in reference_identity} if goal35_diagnostic
-                                      else {k:v for k,v in identity.items() if k!='runner_sha256'})
+                                      else {k:v for k,v in identity.items()
+                                            if k not in ('runner_sha256','evaluation_policy')})
         if reference_identity != current_reference_identity:
             raise ValueError('Diagnostic Expert reference parameters differ (runner hash may differ)')
         reference_episode = reference_book['episodes']['expert']
@@ -1403,7 +1602,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             if name not in diagnostic['events']:
                 diagnostic['events'][name] = dict(time_s=t,**details)
 
-    if not args.no_save and not args.interface_steps and dagger is None:
+    if not benchmark and not args.no_save and not args.interface_steps and dagger is None:
         (root/EVALUATIONS).mkdir(parents=True,exist_ok=True)
         (root/FIGURES).mkdir(parents=True,exist_ok=True)
         if plot.exists() or plot.is_symlink():
@@ -1469,7 +1668,9 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
     def finite_list(values):
         return [float(v) if math.isfinite(float(v)) else str(float(v)) for v in values]
 
-    if target37 and not args.interface_steps and not args.no_save:
+    if benchmark and any(sha(path)!=digest for path,digest in benchmark_sources.items()):
+        raise RuntimeError('Benchmark checkpoint/metadata/reference changed before episode')
+    if benchmark or (target37 and not args.interface_steps and not args.no_save):
         evaluation_output.mkdir(parents=True,exist_ok=False)
     sim = None
     trace = []
@@ -1484,7 +1685,22 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         interface_check=bool(args.interface_steps),
         original_collection_success=None if args.interface_steps else False,
         strict_success=None if args.interface_steps else False,
+        target_id=args.target_id,evaluation_status='incomplete',**ee_proximity(None),
         applied_steps=0,stop_reason='initialising')
+    if benchmark:
+        result['success_thresholds'] = {
+            name:dict(tolerance_m=tolerance,primary=(name=='1cm'),achieved=False,
+                first_achieved_time_s=None,success=False)
+            for name,tolerance in (('1cm',.01),('2cm',.02),('5cm',.05))}
+        result['success_threshold_policy'] = (
+            'True EE error <= tolerance with simultaneous base error <0.08m, heading error <0.05rad, '
+            'time >8s, no navigation timeout or guard failure. First achievement checked every 1ms; '
+            'success additionally excludes any later episode guard failure or navigation timeout. '
+            'Strict Success @ 1cm remains primary. Existing stopping policy retained; early termination '
+            'limits assessment. Final/minimum EE errors alone do not establish success.')
+    if evaluation_record is not None:
+        evaluation_record.update(result)
+        result = evaluation_record
     if qualification is not None:
         qualification['result'] = result
     if dagger is not None:
@@ -1644,7 +1860,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             pin.updateFramePlacements(dyn.pin_model,dyn.pin_data)
             measured_ee = dyn.pin_data.oMf[frame].translation.copy()
             measured_error = float(np.linalg.norm(target-measured_ee))
-            # Mutates only this observer's state; commands discarded for MLP runs.
+            # One persistent navigation update; also supplies wheels in Expert-base pilots.
             expert_wheel = base_controller(nav,p,yaw,goal,bearing,t,bp)
             if nav.done and nav_time is None:
                 nav_time = t
@@ -1666,8 +1882,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                 if not np.isfinite(model_input).all():
                     violation = dict(reason='nonfinite float32 input',time_s=t,input_values=finite_list(model_input[0]))
                     break
-                scaled = (transform(model_input,xs,feature_set) if feature_set=='target37_mask6'
-                          else xs.transform(model_input).astype(np.float32))
+                scaled = xs.transform(model_input).astype(np.float32)
                 if not np.isfinite(scaled).all():
                     violation = dict(reason='nonfinite scaled input',time_s=t,input_values=finite_list(scaled[0]))
                     break
@@ -1678,6 +1893,21 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                     violation = dict(reason='nonfinite scaled prediction',time_s=t,output=OUTPUTS[j],predicted_value=str(output[0,j]))
                     break
                 y = ys.inverse_transform(output.astype(float))[0]
+                if args.benchmark_hybrid_target37:
+                    # Reuse x: no second robot observation or noisy getter.
+                    arm_features = model_features(x.reshape(1,-1),'target37')
+                    arm_scaled = transform(arm_features,hybrid_xs,'target37')
+                    if not np.isfinite(arm_scaled).all():
+                        violation = dict(reason='nonfinite hybrid arm scaled input',time_s=t)
+                        break
+                    with torch.inference_mode():
+                        arm_output = hybrid_model(torch.from_numpy(arm_scaled)).numpy()
+                    arm_prediction = hybrid_ys.inverse_transform(arm_output.astype(float))[0]
+                    wheel_prediction = y.copy()
+                    if not np.isfinite(np.r_[wheel_prediction,arm_prediction]).all():
+                        violation = dict(reason='nonfinite hybrid raw prediction',time_s=t)
+                        break
+                    y = np.r_[wheel_prediction[:4],arm_prediction[4:]]
             diagnostic_expert_commands = None
             if args.diagnostics or dagger is not None:
                 if model is None:
@@ -1691,7 +1921,12 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                         reach_active=shadow_nav.done if goal35_diagnostic else nav.done)
                     diagnostic_expert_commands = np.r_[shadow_wheel if goal35_diagnostic else expert_wheel,shadow_torque]
             applied_commands = y
-            if args.diagnostic_zero_wheels_after_nav and nav.done:
+            if args.benchmark_expert_base_learned_arm:
+                applied_commands = np.r_[expert_wheel,y[4:]]
+                if not np.isfinite(applied_commands).all():
+                    violation = dict(reason='nonfinite Expert-base combined commands',time_s=t)
+                    break
+            if (args.diagnostic_zero_wheels_after_nav or args.benchmark_zero_wheels_after_nav) and nav.done:
                 applied_commands = y.copy()
                 applied_commands[:4] = 0.
             true_pos,true_quat = client.getBasePositionAndOrientation(rid)
@@ -1711,9 +1946,9 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             if not np.isfinite(np.r_[true_q,true_ee,true_pos,base_error,heading,measured_error,true_error]).all():
                 violation = dict(reason='nonfinite true state/error',time_s=t)
                 break
-            if goal35 or target37 or qualification is not None or args.no_save:
-                if true_error < result.get('minimum_true_ee_error_m',float('inf')):
-                    result.update(minimum_true_ee_error_m=true_error,minimum_true_ee_error_time_s=t)
+            if true_error < result.get('minimum_true_ee_error_m',float('inf')):
+                result.update(minimum_true_ee_error_m=true_error,minimum_true_ee_error_time_s=t)
+            if goal35 or target37 or qualification is not None or args.no_save or benchmark:
                 if base_error < result.get('minimum_base_goal_error_m',float('inf')):
                     result.update(minimum_base_goal_error_m=base_error,minimum_base_goal_error_time_s=t)
             if goal35_diagnostic and t>=6.:
@@ -1879,12 +2114,34 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                 result['n_steps'] = qualification['row_count']-qualification['start_row']
                 result['terminal_row_action_applied'] = False
             sample = dict(terminal,commands=finite_list(y))
+            if expert_comparison:
+                sample.update(expert_wheel_commands=expert_wheel.tolist(),applied_commands=None,
+                    action_applied=False,observer_navigation_done=bool(nav.done),
+                    observer_navigation_completed_s=nav_time)
+            if args.benchmark_hybrid_target37:
+                sample.update(hybrid_predictions=dict(filtered_noisy=wheel_prediction.tolist(),
+                    target37_noisy=arm_prediction.tolist()),applied_commands=None,action_applied=False,
+                    observer_navigation_done=bool(nav.done),observer_navigation_completed_s=nav_time)
+            if args.benchmark_zero_wheels_after_nav or args.benchmark_record_kinematics:
+                intervention = result.get('wheel_intervention')
+                sample.update(predicted_wheels=finite_list(y[:4]),applied_wheels=None,
+                    applied_arm_torques=None,action_applied=False,true_base_yaw_rad=true_yaw,
+                    base_xy_displacement_since_intervention_m=(float(np.linalg.norm(
+                        np.asarray(true_pos)[:2]-np.asarray(intervention['true_base_position'])[:2]))
+                        if intervention is not None else None))
+            if args.benchmark_record_kinematics:
+                sample['kinematics'] = dict(true_arm_joint_positions_rad=true_q[4:11].tolist(),
+                    true_base_orientation_xyzw=list(true_quat))
             if k%10==0:
                 trace.append(sample)
             result.update(terminal=terminal,simulation_duration_s=t,observer_navigation_done=bool(nav.done),
                 observer_navigation_completed_s=nav_time,navigation_timeout=bool(nav_time is not None and nav_time>25.))
             original_success = bool(nav.done and measured_error<=.01 and t>8.)
             strict_success = bool(base_error<bp.pos_tol and heading<bp.ang_tol and true_error<=.01 and t>8. and not result['navigation_timeout'])
+            if benchmark and violation is None and base_error<bp.pos_tol and heading<bp.ang_tol and t>8. and not result['navigation_timeout']:
+                for threshold in result['success_thresholds'].values():
+                    if not threshold['achieved'] and true_error<=threshold['tolerance_m']:
+                        threshold.update(achieved=True,first_achieved_time_s=t)
             if qualification is not None:
                 result.update(original_collection_success=bool(original_success and violation is None),
                               strict_success=bool(strict_success and violation is None))
@@ -1909,10 +2166,17 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                     original_collection_success=original_success if (not args.interface_steps or goal35_diagnostic or qualification is not None) and not violation else None if args.interface_steps else False,
                     strict_success=strict_success if (not args.interface_steps or goal35_diagnostic or qualification is not None) and not violation else None if args.interface_steps else False)
                 break
-            if args.diagnostic_zero_wheels_after_nav and nav.done and 'wheel_intervention' not in result:
+            if (args.diagnostic_zero_wheels_after_nav or args.benchmark_zero_wheels_after_nav) and nav.done and 'wheel_intervention' not in result:
                 result['wheel_intervention'] = dict(time_s=t,observer_navigation_completed_s=nav_time,
                     predicted_wheels=y[:4].tolist(),applied_wheels=applied_commands[:4].tolist(),
                     arm_torques_unchanged=bool(np.array_equal(applied_commands[4:],y[4:])))
+                if args.benchmark_zero_wheels_after_nav:
+                    result['wheel_intervention'].update(true_base_position=list(true_pos),
+                        true_base_yaw_rad=true_yaw,base_heading_error_rad=heading,true_ee_error_m=true_error,
+                        predicted_arm_torques=y[4:].tolist(),applied_arm_torques=applied_commands[4:].tolist())
+                    sample['base_xy_displacement_since_intervention_m'] = 0.
+                    if not trace or trace[-1] is not sample:
+                        trace.append(sample)
                 print('DIAGNOSTIC INTERVENTION:',json.dumps(result['wheel_intervention']))
             if goal35_diagnostic and t>=6.:
                 # Snapshots describe pre-step observations. Fill actual applied
@@ -1920,6 +2184,11 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                 snapshot['applied_wheels'] = applied_commands[:4].tolist()
             cmd.SetControlCmd(np.r_[applied_commands,np.zeros(6)],modes)
             sim.Step(cmd,'torque')
+            if args.benchmark_hybrid_target37 or expert_comparison:
+                sample.update(applied_commands=applied_commands.tolist(),action_applied=True)
+            if args.benchmark_zero_wheels_after_nav or args.benchmark_record_kinematics:
+                sample.update(applied_wheels=applied_commands[:4].tolist(),
+                    applied_arm_torques=applied_commands[4:].tolist(),action_applied=True)
             result['applied_steps'] += 1
             if dagger is not None:
                 dagger['emit'](True)
@@ -1943,8 +2212,40 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                 normal_completion=bool(nav_time is not None and nav_time<=bp.nav_timeout),
                 timed_out=bool(nav_time is not None and nav_time>bp.nav_timeout),
                 desired_arm_reference=finite_list(diagnostic_expert_desired)) if 'nav' in locals() else None
+        result.update(ee_proximity(result.get('minimum_true_ee_error_m')))
+        interface_only = bool(args.interface_steps and not goal35_diagnostic
+                              and qualification is None and dagger is None)
+        result['evaluation_status'] = ('not_evaluated' if interface_only
+            else 'pending_validation' if sys.exc_info()[0] is None and violation is None and result.get('terminal') is not None
+            and result['stop_reason'] not in ('initialising','guard_abort') else 'failed')
+        if result['evaluation_status'] in ('not_evaluated','failed'):
+            result['evaluation_failure'] = (str(sys.exc_info()[1]) if sys.exc_info()[0] is not None
+                else result['stop_reason'])
         if sim is not None:
             sim.pybullet_client.disconnect()
+        if sys.exc_info()[0] is not None and evaluation_record is None:
+            print_proximity_report([result])
+    try:
+        if (sha(root/METADATA/'pipeline_manifest.json')!=identity['manifest_sha256']
+                or sha(__file__)!=identity['runner_sha256']
+                or any(sha(task.parents[1]/path)!=digest for path,digest in source_hashes.items())
+                or (checkpoint_hash is not None and sha(checkpoint_path)!=checkpoint_hash)
+                or (target37 and sha(root/METADATA/'split_validation.json')!=ck['split_validation_sha256'])
+                or (benchmark and any(sha(path)!=digest for path,digest in benchmark_sources.items()))):
+            raise RuntimeError('Checkpoint/source/metadata integrity changed during episode')
+    except Exception as exc:
+        result.update(evaluation_status='failed',evaluation_failure=str(exc))
+        if evaluation_record is None:
+            print_proximity_report([result])
+        raise
+    if result['evaluation_status']=='pending_validation':
+        result['evaluation_status'] = 'completed'
+    if benchmark:
+        for threshold in result['success_thresholds'].values():
+            threshold['success'] = bool(threshold['achieved'] and violation is None
+                and not result.get('navigation_timeout',False))
+    if evaluation_record is None:
+        print_proximity_report([result])
     if dagger is not None:
         result.pop('trace',None)
         return result
@@ -1956,16 +2257,33 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             data_status='successful_demonstration_pending_review' if result['original_collection_success'] else 'failed_rollout_not_approved_for_training')
         result.pop('trace',None)
         return result
+    if benchmark:
+        if any(sha(path)!=digest for path,digest in benchmark_sources.items()):
+            raise RuntimeError('Benchmark checkpoint/metadata/reference changed during episode')
+        result.update(feature_set=feature_set,training_condition=checkpoint_condition,
+            normal_navigation_completion=bool(result.get('observer_navigation_done')
+                and result.get('observer_navigation_completed_s') is not None and not result.get('navigation_timeout')),
+            stopped_on_measured_success_before_strict=bool(
+                result['stop_reason']=='original_collection_success' and not result['strict_success']),
+            minimum_policy='All observed 1ms steps, including terminal observation')
+        if args.benchmark_hybrid_target37:
+            result.update(controller='hybrid_target37_noisy',hybrid_models=identity['hybrid_models'])
+        if args.benchmark_expert_base_learned_arm:
+            result['controller'] = 'expert_base_target37_noisy_arm'
+        book['episodes'][result['controller']] = result
+        book['ee_proximity_summary'] = proximity_summary(book['episodes'].values())
+        with summary.open('x',encoding='utf-8') as handle:
+            handle.write(json.dumps(book,indent=2,allow_nan=False)+'\n')
+        print('Pilot saved:',summary,'Stop:',result['stop_reason'])
+        if result['stopped_on_measured_success_before_strict']:
+            print('Original measured-success stop retained; rollout was not continued to the time cap.')
+        print('Review this single-target pilot before starting a multi-target benchmark.')
+        return result
     if args.no_save:
         if (sha(root/METADATA/'pipeline_manifest.json')!=identity['manifest_sha256']
                 or (checkpoint_hash is not None and sha(checkpoint_path)!=checkpoint_hash)
                 or (target37 and sha(root/METADATA/'split_validation.json')!=ck['split_validation_sha256'])):
             raise RuntimeError('Checkpoint/manifest/split identity changed during episode')
-        final_error = result.get('terminal',{}).get('true_ee_error_m')
-        minimum_error = result.get('minimum_true_ee_error_m')
-        print(f'Controller: {args.controller} | Target: {args.target_id} | '
-              f'Stop: {result["stop_reason"]} | Strict success: {result["strict_success"]}\n'
-              f'EE error (m), final/minimum: {final_error} / {minimum_error}')
         return result
     if args.diagnostics:
         print('\nDIAGNOSTIC ONLY — normal task stopping, no result files' if goal35_diagnostic
@@ -1979,8 +2297,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             print('GOAL35: normal episode stopping rules, terminal-only. Summaries cover t>=6s. Shadow commands never applied.')
             print('Applied controller:', 'Goal35 arm predictions + zero wheels after observer nav.done (diagnostic intervention)'
                   if args.diagnostic_zero_wheels_after_nav else 'Unmodified Goal35 predictions')
-            print('Duration:',result.get('simulation_duration_s'),'Strict success:',result['strict_success'],
-                  'Original criterion:',result['original_collection_success'])
+            print('Duration:',result.get('simulation_duration_s'))
             print('Wheel intervention:',result.get('wheel_intervention','not applied'))
             final = result.get('terminal',{})
             print('True EE error minimum/final (m):',result.get('minimum_true_ee_error_m'),final.get('true_ee_error_m'),
@@ -2056,10 +2373,10 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             raise RuntimeError('Target37 checkpoint/manifest/split identity changed during episode')
         result.update(feature_set=feature_set,minimum_policy='All observed 1ms steps, including terminal observation')
         book['episodes'][args.controller] = result
+        book['ee_proximity_summary'] = proximity_summary(book['episodes'].values())
         with summary.open('x',encoding='utf-8') as handle:
             handle.write(json.dumps(book,indent=2,allow_nan=False)+'\n')
-        print('Target37 filtered result:' if feature_set=='target37_filtered' else 'Target37 Mask6 result:' if feature_set=='target37_mask6' else 'Target37 result:',summary,'Stop:',result['stop_reason'])
-        print('Strict success:',result['strict_success'],'Original criterion:',result['original_collection_success'])
+        print('Target37 filtered result:' if feature_set=='target37_filtered' else 'Target37 result:',summary,'Stop:',result['stop_reason'])
         return
     if goal35:
         # Independent single-model result: never reads or updates the historical
@@ -2069,12 +2386,12 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             raise RuntimeError('Goal35 checkpoint/manifest changed during episode')
         result.update(feature_set=feature_set,minimum_policy='All observed 1ms steps, including terminal observation')
         book['episodes'][args.controller] = result
+        book['ee_proximity_summary'] = proximity_summary(book['episodes'].values())
         payload = json.dumps(book,indent=2,allow_nan=False)+'\n'
         with summary.open('x',encoding='utf-8') as handle:
             handle.write(payload)
         final = result.get('terminal',{})
         print('Goal35 result:',summary)
-        print(f'Strict success: {result["strict_success"]}; original criterion: {result["original_collection_success"]}; stop: {result["stop_reason"]}')
         print('Final true EE error (m):',final.get('true_ee_error_m'),'Minimum (m):',result.get('minimum_true_ee_error_m'),'at (s):',result.get('minimum_true_ee_error_time_s'))
         print('Final base-goal error (m):',final.get('base_goal_error_m'),'Minimum (m):',result.get('minimum_base_goal_error_m'),'at (s):',result.get('minimum_base_goal_error_time_s'))
         print('Duration (s):',result.get('simulation_duration_s'),'Navigation done:',result.get('observer_navigation_done'),'Timeout:',result.get('navigation_timeout'))
@@ -2085,6 +2402,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         if current!=book:
             raise RuntimeError('Summary changed concurrently; result not published')
     book['episodes'][args.controller] = result
+    book['ee_proximity_summary'] = proximity_summary(book['episodes'].values())
     complete = set(book['episodes'])=={'expert','clean','noisy'}
     if complete:
         expert = {r['time_s']:r for r in book['episodes']['expert']['trace']}
@@ -2143,10 +2461,11 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
     base_text = f'{base_error:.6g} m' if base_error is not None else 'unavailable'
     duration_text = f'{duration:.6g} s' if duration is not None else 'unavailable'
     print(f'Controller: {args.controller} | Target ID: {args.target_id} | '
-          f'Task success (strict): {result["strict_success"]}\n'
+          f'Evaluation: {result["evaluation_status"]}\n'
           f'Final true EE distance: {ee_text} | Final base goal error: {base_text}\n'
           f'Simulation duration: {duration_text} | Stop reason: {result["stop_reason"]}')
     if complete:
+        print_proximity_report(list(book['episodes'].values()))
         print('Three-controller comparison complete:',plot)
 
 

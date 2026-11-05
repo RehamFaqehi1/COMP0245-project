@@ -1,9 +1,57 @@
-"""Shared offline MLP evaluation metrics."""
+"""Shared offline MLP metrics and closed-loop EE proximity reporting."""
+
+import math
 
 import numpy as np
 import torch
 
 from .features import HISTORY_POLICY, INPUTS, OUTPUTS, transform
+
+
+def ee_proximity(minimum_error):
+    """Closest observed true EE approach; no task-state or time requirements."""
+    best = minimum_error if minimum_error is not None and math.isfinite(minimum_error) else None
+    return dict(best_true_ee_error_m=best, best_true_ee_error_cm=None if best is None else best*100,
+                ee_success_5cm=None if best is None else bool(best < .05),
+                ee_success_10cm=None if best is None else bool(best < .10))
+
+
+def proximity_summary(episodes):
+    """Count only completed evaluations; retain failed/partial attempts separately."""
+    models = {}
+    for episode in episodes:
+        model = models.setdefault(episode['controller'], dict(evaluated_targets=0,
+            reached_5cm=0, reached_10cm=0, evaluation_failures=[]))
+        if episode.get('evaluation_status') != 'completed':
+            model['evaluation_failures'].append(dict(target_id=episode.get('target_id'),
+                reason=episode.get('evaluation_failure', episode.get('stop_reason', 'not completed'))))
+            continue
+        model['evaluated_targets'] += 1
+        model['reached_5cm'] += episode['ee_success_5cm'] is True
+        model['reached_10cm'] += episode['ee_success_10cm'] is True
+    for model in models.values():
+        total = model['evaluated_targets']
+        for cm in (5, 10):
+            model[f'success_rate_{cm}cm_percent'] = 100*model[f'reached_{cm}cm']/total if total else None
+    return models
+
+
+def print_proximity_report(episodes):
+    """Report the same two EE-only metrics for every controller."""
+    for episode in episodes:
+        print(f'Target: {episode.get("target_id")} | Controller: {episode["controller"]} | '
+              f'Minimum true EE error: {episode.get("best_true_ee_error_m")} m / '
+              f'{episode.get("best_true_ee_error_cm")} cm | '
+              f'Reached within 5 cm: {episode.get("ee_success_5cm")} | '
+              f'Reached within 10 cm: {episode.get("ee_success_10cm")} | '
+              f'Evaluation: {episode.get("evaluation_status")}')
+        print('Stop reason:', episode.get('stop_reason', 'unavailable'))
+        print('Minimum true EE error time (s):',
+              episode.get('minimum_true_ee_error_time_s'))
+        print('Final measured EE error (m; stopping-logic observation):',
+              episode.get('terminal', {}).get('measured_ee_error_m'))
+    for name, summary in proximity_summary(episodes).items():
+        print(name, summary)
 
 
 def evaluate(model, chunks, xs, ys, device, feature_set='baseline33'):
