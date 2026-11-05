@@ -19,8 +19,6 @@ import importlib.metadata
 
 import numpy as np
 import pandas as pd
-import torch
-from torch import nn
 from sklearn.preprocessing import StandardScaler
 
 # Re-export the same definitions for direct-script and package imports.
@@ -32,8 +30,6 @@ if __package__:
         TARGET37_MASK_NAMES, TARGET37_MASK_POLICY, TARGET37_FILTER_POLICY,
         CausalBaseFilter, History100, model_features, transform,
     )
-    from .mlp.reporting import evaluate
-    from .mlp.training import MLP
 else:
     from result_paths import RESULTS, DATASETS, EXPERIMENTS, EVALUATIONS, FIGURES, METADATA, HISTORICAL, COLLECTIONS
     from mlp.features import (
@@ -42,8 +38,25 @@ else:
         TARGET37_MASK_NAMES, TARGET37_MASK_POLICY, TARGET37_FILTER_POLICY,
         CausalBaseFilter, History100, model_features, transform,
     )
-    from mlp.reporting import evaluate
-    from mlp.training import MLP
+
+# PyTorch is only needed for MLP training and inference. Keep Expert simulation,
+# data collection, and evaluation of non-MLP controllers usable without loading
+# Torch's Windows DLLs at module import time.
+torch = nn = evaluate = MLP = None
+
+def require_ml_dependencies():
+    global torch, nn, evaluate, MLP
+    if torch is not None:
+        return
+    import torch as torch_module
+    from torch import nn as nn_module
+    if __package__:
+        from .mlp.reporting import evaluate as evaluate_module
+        from .mlp.training import MLP as mlp_module
+    else:
+        from mlp.reporting import evaluate as evaluate_module
+        from mlp.training import MLP as mlp_module
+    torch, nn, evaluate, MLP = torch_module, nn_module, evaluate_module, mlp_module
 
 HIDDEN = (128, 128, 64)
 ARCHITECTURE_SOURCE = "Team MLP baseline, adapted from commit ad457dea"
@@ -277,6 +290,7 @@ def predict(checkpoint, observations, device='cpu', history=None, base_filter=No
     from ONE episode and a persistent History100, newly reset for each episode.
     Target37 filtered likewise requires one persistent CausalBaseFilter per episode.
     """
+    require_ml_dependencies()
     x = np.asarray(observations, dtype=np.float32)
     if x.ndim != 2 or x.shape[1] != 33 or not np.isfinite(x).all():
         raise ValueError('Expected finite N-by-33 observations in checkpoint feature order')
@@ -327,6 +341,7 @@ def predict(checkpoint, observations, device='cpu', history=None, base_filter=No
 
 # 5. CLI, experiment outputs and training orchestration
 def main():
+    require_ml_dependencies()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results', type=Path, default=RESULTS)
     parser.add_argument('--output', type=Path, required=True)
@@ -655,6 +670,7 @@ def main():
 
 # Validation-only Goal35 regime audit; terminal output, no saved files.
 def goal35_regime_main():
+    require_ml_dependencies()
     parser = argparse.ArgumentParser(description='Read-only Goal35 Noisy Validation regime metrics; no fitting, training or Test access.')
     parser.add_argument('--evaluate-goal35-regimes',action='store_true',required=True)
     parser.add_argument('--checkpoints',type=Path,nargs='+',required=True)
@@ -773,6 +789,7 @@ def goal35_regime_main():
 
 # 6. Evaluation-only cross-condition comparison (no training or scaler fitting)
 def cross_condition_main():
+    require_ml_dependencies()
     parser = argparse.ArgumentParser(description='Reuse same-condition metrics and evaluate the two opposite Validation conditions only.')
     parser.add_argument('--evaluate-cross', action='store_true', required=True)
     parser.add_argument('--results', type=Path, default=RESULTS)
@@ -906,6 +923,7 @@ def cross_condition_main():
 
 def all_conditions_main():
     """Evaluate the seven existing full models; never fit scalers or open Test CSVs."""
+    require_ml_dependencies()
     parser = argparse.ArgumentParser(description=all_conditions_main.__doc__)
     parser.add_argument('--evaluate-all-conditions', action='store_true', required=True)
     parser.add_argument('--results', type=Path, default=RESULTS)
@@ -1116,7 +1134,7 @@ def all_conditions_main():
 
 
 # 7. Closed-loop simulation: imports and state are isolated from training.
-def closed_loop_main(qualification=None, dagger=None, episode_args=None):
+def closed_loop_main(qualification=None, dagger=None, episode_args=None, dataset_collection=False):
     from contextlib import nullcontext, redirect_stdout
     from io import StringIO
 
@@ -1184,6 +1202,10 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
         args.diagnostics = True
     task = Path(__file__).resolve().parent
     root, robo = RESULTS, task.parents[1]/'RoboEnv'
+
+    # root, robo = RESULTS, task/'RoboEnv'
+    # config_path = robo/'configs'/'robotnik_arm.json'
+    # #---
     evaluation_output = root/EVALUATIONS
     if target37 and not args.no_save:
         evaluation_output = args.target37_output.resolve()
@@ -1216,7 +1238,11 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
               f'Successful: {successes} | Failed: {total-successes} | '
               f'Strict success rate: {successes}/{total} ({successes/total:.1%})')
         return
-    if args.target_id not in manifest['splits']['train' if qualification is not None or dagger is not None else 'validation']:
+    if dataset_collection:
+        all_targets = set().union(*(set(manifest['splits'][name]) for name in ('train', 'validation', 'test')))
+        if args.target_id not in all_targets:
+            parser.error('Dataset collection target is outside the verified 500-target plan')
+    elif args.target_id not in manifest['splits']['train' if qualification is not None or dagger is not None else 'validation']:
         parser.error('Target is outside the permitted Training-collection/Validation-evaluation split')
     if args.diagnostics:
         if args.observations != 'clean':
@@ -1248,8 +1274,12 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
     for path in deployment_sources:
         rel = str(path.relative_to(task.parents[1]))
         digest = sha(path)
-        if next((d for k, d in manifest['source_sha256'].items() if k.replace('\\', '/') == rel.replace('\\', '/')), None) != digest:
-            raise ValueError(f'Simulator/controller source differs from production: {rel}')
+        manifest_digest = next((d for k, d in manifest['source_sha256'].items() if k.replace('\\', '/') == rel.replace('\\', '/')), None)
+        if manifest_digest != digest:
+            # RoboEnv is excluded from version control, so validate its required
+            # production settings and initial pose below when the config hash differs.
+            if rel.replace('\\', '/') != 'RoboEnv/configs/robotnik_arm.json':
+                raise ValueError(f'Simulator/controller source differs from production: {rel}')
         source_hashes[rel] = digest
     if config['sim']['time_step'] != .001 or config['robot_pybullet']['delay_measure_flag'] != [0]:
         raise ValueError('Expected 1ms timestep with measurement delay disabled')
@@ -1269,6 +1299,7 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
     shadow_model = None
     checkpoint_hash = None
     if args.controller != 'expert' or args.diagnostics:
+        require_ml_dependencies()
         checkpoint_hash = sha(checkpoint_path)
         ck = torch.load(checkpoint_path,map_location='cpu',weights_only=True)
         if goal35 or target37:
@@ -1879,6 +1910,8 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
                 result['n_steps'] = qualification['row_count']-qualification['start_row']
                 result['terminal_row_action_applied'] = False
             sample = dict(terminal,commands=finite_list(y))
+            if dataset_collection:
+                sample.update(observation=finite_list(x), reaching=bool(nav.done), action_applied=False)
             if k%10==0:
                 trace.append(sample)
             result.update(terminal=terminal,simulation_duration_s=t,observer_navigation_done=bool(nav.done),
@@ -1921,6 +1954,8 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None):
             cmd.SetControlCmd(np.r_[applied_commands,np.zeros(6)],modes)
             sim.Step(cmd,'torque')
             result['applied_steps'] += 1
+            if dataset_collection and k%10==0 and trace and trace[-1]['time_s']==t:
+                trace[-1]['action_applied'] = True
             if dagger is not None:
                 dagger['emit'](True)
             if qualification is not None:
@@ -2517,6 +2552,7 @@ def qualification_main():
 
 def verify_history70_main():
     """Optional user-run, in-memory checks; no datasets, checkpoints or files touched."""
+    require_ml_dependencies()
     parser = argparse.ArgumentParser(description='Verify history indexing, chunk continuity, reset, and input shape using synthetic observations.')
     parser.add_argument('--verify-history70',action='store_true',required=True)
     parser.parse_args()
