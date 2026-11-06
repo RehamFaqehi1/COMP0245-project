@@ -186,3 +186,20 @@ control and gripper handling. `robotnik_arm_task.py` is a separate example;
 the training scripts and Tasks 1-3 do not import it, but it is included if you
 want to run that example independently. Root-level copies may also exist in
 the larger workspace.
+
+
+NOTE: 
+## Troubleshooting and Reproducibility
+
+The demonstration scripts are currently configured for the original development workspace. Users running the project on another device may need to adjust local file paths and ensure that the required dependencies, model checkpoints, and preprocessing files are available.
+
+The [Task 1–3 video demonstrations](https://github.com/RehamFaqehi1/COMP0245-project/releases/tag/comp0245-demo-v1.0) illustrate the expected behaviour of the robot in the simulated living-room environment.
+
+If a simulation freezes, crashes, or behaves unexpectedly, possible causes include:
+
+- **Hardware limitations:** The living-room environment and robot simulation can require substantial RAM and CPU resources. Limited GPU capabilities may also affect graphical rendering performance.
+- **Missing dependencies:** An incomplete or incorrectly configured Pixi environment, missing Python modules, or unavailable simulator assets may prevent the scripts from running.
+- **Incorrect file paths:** Local paths to RoboEnv, trained model checkpoints, or preprocessing scalers may differ across devices and must be configured accordingly.
+- **Simulation instability:** PyBullet physics, robot initialisation, or numerical control behaviour may vary across environments, potentially affecting execution and task completion.
+
+**Note:** The demonstration videos provide a reference for the expected task behaviour. Successful execution on another device depends on a compatible software environment, the required project assets, and sufficient hardware resources.
