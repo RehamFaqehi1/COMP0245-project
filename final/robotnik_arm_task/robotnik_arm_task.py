@@ -1,3 +1,10 @@
+"""Run the original model-based Expert for a fixed end-effector target.
+
+The base navigates to a standoff pose before the arm reaches using differential IK.
+Target and gripper settings are defined below; ROBOENV_HEADLESS and
+ROBOENV_MAX_STEPS control display and the step cap. GUI runs also plot tracking
+errors after stopping; press q in the PyBullet window to stop manually.
+"""
 import numpy as np
 import time
 import os
@@ -46,6 +53,7 @@ REACH_TOLERANCE = 0.01
 
 
 def main():
+    """Set up the robot, run coordinated base/arm control, and report tracking."""
     # --------------------------------------------------------------------------
     # Configuration and Simulation Setup
     # --------------------------------------------------------------------------

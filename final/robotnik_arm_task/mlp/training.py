@@ -4,6 +4,14 @@ from torch import nn
 
 
 class MLP(nn.Module):
+    """Shared 128-128-64 ReLU regressor with eleven command outputs.
+
+    Args:
+        input_size: Feature width: 33, 35, 37 or 70 for the supported schemas.
+
+    The output order is four wheel commands followed by seven arm torques;
+    input scaling and output inverse scaling are handled by the caller.
+    """
     def __init__(self, input_size=33):
         super().__init__()
         if input_size not in (33,35,37,70):

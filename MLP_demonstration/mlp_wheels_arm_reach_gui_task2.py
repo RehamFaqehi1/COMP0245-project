@@ -15,7 +15,6 @@ The MLP predicts wheel commands from the current 20-feature state on each
 simulation step. Its arm-torque outputs are ignored.
 """
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -101,7 +100,7 @@ CUBE_POSITION = np.array(
     [TARGET_EE_POS[0], TARGET_EE_POS[1], 0.06],
     dtype=np.float64,
 )
-# Farther drop location; the base navigation controller handles the return leg.
+# The pick target is slightly above the cube's top surface to allow the fingers to grasp it.
 DROP_LOCATION = np.array([2.5, 2.5, 0.0], dtype=np.float64)
 POLICY_TARGET_HEIGHT = float(TARGET_EE_POS[2])
 
@@ -123,9 +122,8 @@ STANDOFF_POINTS = [0.80, 0.65, 0.65, 0.35]
 
 REACH_TOLERANCE = 0.01
 
-MAX_STEPS = int(
-    os.environ.get("ROBOENV_MAX_STEPS", "40000")
-)
+# Zero disables the controller's simulation step cap.
+MAX_STEPS = 0
 
 # Safety limits.
 # Set this to a conservative value appropriate for
@@ -264,7 +262,7 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    checkpoint = torch.load(CHECKPOINT, map_location=device, weights_only=True)
+    checkpoint = torch.load(CHECKPOINT, map_location=device, weights_only=False)
     if checkpoint.get("input_columns") != MLP_INPUT_COLUMNS:
         raise ValueError("Checkpoint input feature order does not match mlp_data.")
     if checkpoint.get("output_columns") != OUTPUT_COLUMNS:
@@ -960,15 +958,6 @@ def main():
 
             current_time += time_step
             simulation_steps += 1
-
-            if simulation_steps >= MAX_STEPS:
-
-                print(
-                    "\nMaximum simulation steps reached.",
-                    flush=True,
-                )
-
-                break
 
             time.sleep(0.001)
 

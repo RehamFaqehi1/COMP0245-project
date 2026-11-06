@@ -21,7 +21,11 @@ else:
     from result_paths import DATASETS, FIGURES, METADATA
 
 
+# ============================================================
+# Streaming statistics and bounded sampling
+# ============================================================
 class Stats:
+    """Accumulate finite-value counts, moments and ranges independently by column."""
     def __init__(self, width):
         self.n = np.zeros(width, dtype=np.int64)
         self.mean = np.zeros(width)
@@ -30,6 +34,7 @@ class Stats:
         self.hi = np.full(width, -np.inf)
 
     def add(self, a):
+        """Merge a row block using stable combined moments, ignoring nonfinite cells."""
         for j in range(a.shape[1]):
             x = a[:, j]
             x = x[np.isfinite(x)]
@@ -46,10 +51,12 @@ class Stats:
             self.hi[j] = max(self.hi[j], x.max())
 
     def std(self):
+        """Return population standard deviations, or NaN for columns without data."""
         return np.sqrt(np.divide(self.m2, self.n, out=np.full_like(self.m2, np.nan), where=self.n > 0))
 
 
 class Reservoir:
+    """Keep at most size uniformly sampled rows using a seeded priority reservoir."""
     # IID random priorities give a uniform sample without replacement.
     def __init__(self, size, width, seed):
         self.size = size
@@ -72,7 +79,15 @@ def digest(path):
     return h.hexdigest()
 
 
+# ============================================================
+# Dataset integrity review and HTML report
+# ============================================================
 def main():
+    """Inspect verified split CSVs and write a new self-contained quality report.
+
+    Training data supports preprocessing comparisons; Validation is descriptive.
+    Test data is read for integrity checks and is excluded from those comparisons.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -124,6 +139,7 @@ def main():
             locations = [None] * 33
 
             def consume(rows, times):
+                """Update statistics and preserve training filter state between chunks."""
                 nonlocal filter_state
                 a = np.asarray(rows, dtype=float)
                 stats.add(a)

@@ -1,8 +1,15 @@
-"""Ordered MLP feature schemas and checkpoint policy metadata."""
+"""Ordered MLP feature schemas and checkpoint policy metadata.
+
+Build the same unscaled features for streamed training rows and online inference.
+"""
 
 import math
 
 import numpy as np
+
+# ============================================================
+# FEATURE SCHEMAS AND CHECKPOINT POLICIES
+# ============================================================
 
 INPUTS = (['base_x', 'base_y', 'base_yaw']
           + [f'arm_q{i}' for i in range(1, 8)]
@@ -39,8 +46,15 @@ GOAL_FEATURE_POLICY = ('goal35_v1: baseline observations rounded to float32 firs
     'heading wrapped with atan2(sin(error),cos(error)); atan2(0,0)=0 convention.')
 
 
+# ============================================================
+# STATEFUL FEATURE PROCESSING
+# ============================================================
+
 class CausalBaseFilter:
-    """Fixed 20ms-per-stage pose estimator; no future samples or raw-derivative filtering."""
+    """Fixed 20ms-per-stage pose estimator; no future samples or raw-derivative filtering.
+
+    Create one filter per trajectory and reuse it across consecutive chunks.
+    """
     def __init__(self):
         self.count = 0
         self.first = self.second = self.velocity = None
@@ -48,6 +62,15 @@ class CausalBaseFilter:
         self.alpha = -math.expm1(-TARGET37_FILTER_POLICY['dt_s']/TARGET37_FILTER_POLICY['tau_per_stage_s'])
 
     def build(self, observations, start_step=None):
+        """Build Target37 rows with filtered base velocity and acceleration.
+
+        Args:
+            observations: Chronological N-by-33 baseline observations.
+            start_step: Optional trajectory offset checked against filter state.
+
+        Returns:
+            N-by-37 float32 rows with six estimated base-motion features.
+        """
         if start_step is not None and start_step!=self.count:
             raise ValueError('Filtered trajectory must start at zero and remain contiguous')
         result = model_features(observations,'target37')
@@ -78,13 +101,25 @@ class CausalBaseFilter:
 
 
 class History100:
-    """Causal Goal35 history shared by CSV chunks and single-step inference."""
+    """Causal Goal35 history shared by CSV chunks and single-step inference.
+
+    Create a new history for each trajectory; retain it across consecutive chunks.
+    """
     def __init__(self):
         self.tail = np.empty((0,35),dtype=np.float32)
         self.first = None
         self.count = 0
 
     def build(self, current, start_step=None):
+        """Pair current Goal35 rows with their 100-step history.
+
+        Args:
+            current: Chronological N-by-35 unscaled Goal35 observations.
+            start_step: Optional trajectory offset checked against stored history.
+
+        Returns:
+            N-by-70 rows, padding unavailable history with the first observation.
+        """
         current = np.asarray(current,dtype=np.float32)
         if current.ndim!=2 or current.shape[1]!=35 or not np.isfinite(current).all():
             raise ValueError('History expects finite chronological N-by-35 Goal35 observations')
@@ -104,8 +139,22 @@ class History100:
         return result
 
 
+# ============================================================
+# ROW TRANSFORMATIONS
+# ============================================================
+
 def model_features(observations, feature_set='baseline33', base_filter=None, start_step=None):
-    """Shared row/inference transformation; accepts original ordered N-by-33 inputs."""
+    """Shared row/inference transformation; accepts original ordered N-by-33 inputs.
+
+    Args:
+        observations: Finite baseline observations in INPUTS order.
+        feature_set: Baseline33, Goal35, Target37 or Target37 Filtered schema name.
+        base_filter: Persistent CausalBaseFilter for Target37 Filtered only.
+        start_step: Optional trajectory offset for filtered-row continuity checks.
+
+    Returns:
+        Unscaled float32 rows in the selected feature order.
+    """
     x = np.asarray(observations,dtype=np.float32)
     if x.ndim != 2 or x.shape[1] != 33 or not np.isfinite(x).all():
         raise ValueError('Expected finite N-by-33 baseline observations')
@@ -145,6 +194,10 @@ def model_features(observations, feature_set='baseline33', base_filter=None, sta
     return result
 
 def transform(x, scaler, feature_set='baseline33'):
+    """Apply fitted input scaling, or leave rows unscaled when no scaler is given.
+
+    Feature construction happens upstream; feature_set is kept for call compatibility.
+    """
     result = x if scaler is None else scaler.transform(x).astype(np.float32, copy=False)
     return result
 

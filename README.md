@@ -1,41 +1,116 @@
 # COMP0245 Robot Learning
 
-Behaviour cloning for a mobile robot with a seven-joint arm. The task is to navigate
-towards a target and reach it with the end effector. An Original Expert combines
-base navigation and arm control; the MLP learns to predict its commands from
-observations.
+## Project Overview
 
-## Final GUI demonstration — Tasks 1–3
+From model-based demonstrations to learned navigation and hybrid mobile manipulation.
+A four-wheeled mobile base with a seven-joint Kinova arm must approach a target,
+reach it, and ultimately pick up, deliver and sort objects in a simulated living room.
 
-Start with the [final demonstration guide](MLP_demonstration/README.md) for the
-three task GUIs in `MLP_demonstration/`. The tasks progress from picking up and
-lifting an object, to delivery, to sorting. The saved MLP controls wheel navigation;
-a Cartesian feedback controller handles the arm.
+**Final solution:** an MLP drives the wheels and a Cartesian feedback controller
+moves the arm. Start with the [Tasks 1–3 guide](MLP_demonstration/README.md) or watch
+[Task 1 — Pick Up & Lift](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task1.mp4),
+[Task 2 — Pick Up & Deliver](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task2.mp4), and
+[Task 3 — Object Sorting](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task3.mp4).
 
-The experimental results, reproduction commands and research workflows are
-documented below, separately from the final demonstration.
+## Solution Development Flow
 
-## Experimental background
+**Mathematical Expert → Balanced LHS targets → D1 expert trajectories →
+MLP/LSTM/ACT experiments → Offline prediction evaluation → Matched online
+closed-loop evaluation → D2 and the final hybrid controller → Living-room Tasks 1–3.**
 
-The saved dataset contains **500 clean and 500 noisy Expert trajectories** on the
-same 500 targets. Targets, rather than individual rows, are split into **350
-training, 75 validation and 75 test targets**, shared across both conditions.
-Baseline33 uses 33 inputs: base pose, arm positions and velocities, target position,
-and derived base/arm motion features. All models predict **four wheel velocities
-(rad/s) and seven arm torques (Nm)**.
+The stages answer different questions: offline evaluation measures imitation of
+Expert actions, closed-loop evaluation measures the resulting trajectories, and
+the final demonstrations exercise complete navigation and manipulation tasks.
 
-## Experimental Results — 12 Trained MLP Models
+### Mathematical/model-based Expert
 
-Six MLP variants—Baseline33, Goal35, Goal35 Reaching2, History70, Target37 and
-Target37 Filtered—have each been trained and validated separately on **Clean and
-Noisy expert datasets**, giving **12 completed models**. These variants share the
-hidden-layer architecture; they differ in input features, temporal processing or
-training weights. Reaching2 changes the training loss, not the network structure.
+The first problem was imitation of an analytical Expert, rather than object sorting.
+The [Original Expert](final/robotnik_arm_task/robotnik_arm_control.py) aligns the base,
+drives to a height-dependent stand-off goal and orients toward the target. A
+Cartesian reaching controller uses damped differential inverse kinematics to
+form a joint reference, followed by joint PD control with gravity compensation.
+Schematically, with Jacobian $J$, damping $\lambda$ and Cartesian velocity $v$:
 
-The assessor can inspect the [main comparison table](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/summary.csv)
-and [per-output MAE, RMSE and R² for all 11 outputs](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/per_output.csv).
-The [comparison report](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/comparison.json)
-records included/skipped experiments, compatibility groups and source JSON hashes.
+$$\dot q_d=J^\top(JJ^\top+\lambda^2I)^{-1}v,\qquad
+\tau=K_p(q_d-q)+K_d(\dot q_d-\dot q)+g(q).$$
+
+The implementation additionally handles joint limits, velocity/torque bounds,
+arm holding and navigation/reaching phases. Its four wheel commands (rad/s) and
+seven arm torques (Nm) provide the 11 supervised action labels.
+The [instructor README](final/robotnik_arm_task/INSTRUCTOR_README.md) is preserved unchanged.
+
+## Dataset Generation and D1/D2 Overview
+
+### D1 — paired Clean/Noisy demonstrations
+
+[Balanced stratified Latin Hypercube Sampling](final/robotnik_arm_task/pipeline_common.py)
+spreads 500 target positions over **36 strata: 4 spatial quadrants × 3 distance
+bands × 3 height bands**, with 13 or 14 targets per stratum. Distance bands span
+0.6–1.8 m and target heights span 0.3–1.1 m. Target generation uses seed 42;
+stratified target-ID splitting uses seed 314159.
+
+D1 contains **500 Clean and 500 Noisy Expert trajectories on the same 500 targets**.
+Each condition shares **350 Train / 75 Validation / 75 Test target IDs**. Splitting
+whole target trajectories avoids putting rows from one target into different splits.
+The original supervised schema has **33 inputs and 11 action outputs**. Clean
+and Noisy conditions have different timestep counts, despite sharing target IDs.
+The [pipeline manifest](final/robotnik_arm_task/results/metadata/pipeline_manifest.json)
+and [split verification](final/robotnik_arm_task/results/metadata/split_validation.json)
+record the identities; collection, replacement and historical provenance are
+explained in the [D1 experiment guide](final/robotnik_arm_task/README.md).
+
+### D2 — enhanced demonstrations for the final solution
+
+D2 is the **separate enhanced 1,000-trajectory dataset**, distributed with
+700 Train / 150 Validation / 150 Test trajectories. Its release records 5,832,520 /
+1,257,287 / 1,259,577 rows respectively. It supplies the final demonstration MLP's
+20-feature configuration. D2 is not D1's paired 500 Clean/500 Noisy collection;
+its release metadata does not establish the same target-sampling procedure.
+Changes in dataset size, features and tasks prevent direct performance comparisons
+between D1 and D2. Both datasets have [published releases](#datasets--downloads).
+
+## Neural Network Models and Experiments
+
+Six D1 variants were trained separately on Clean and Noisy data, producing **12 MLPs**.
+All use ReLU hidden layers **(128, 128, 64)** and a linear 11-output head, with
+training-fitted input/output scaling:
+
+- **Baseline33:** original ordered state, target and motion features.
+- **Goal35:** adds navigation-goal distance and heading error.
+- **Goal35 Reaching2:** Goal35 with reaching-phase training weight 2; validation remains unweighted.
+- **History70:** current Goal35 plus its 100 ms history.
+- **Target37:** adds four target-relative body-frame geometry features.
+- **Target37 Filtered:** estimates six base-motion features using causal pose smoothing.
+
+These experiments separate changes in geometry, temporal information, noise
+sensitivity and loss weighting; they do not all have identical first-layer capacity.
+The [LSTM exploration](LSTM_experiment/README.md) uses 100-step Target37 windows
+and a two-layer recurrent encoder. The [ACT exploration](ACT_experiment/README.md)
+stores a state-based Action Chunking Transformer configuration and a checkpoint
+at training step 50,000. **Neither LSTM nor ACT is part of the 975-episode MLP/Expert
+benchmark below.** ACT's saved files do not establish a matched evaluation result.
+
+## Experimental Results — Offline Evaluation
+
+The following compact table is transcribed from the [saved comparison CSV](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/summary.csv).
+**C→C** means Clean-trained on Clean Validation trajectories; **N→N** means
+Noisy-trained on Noisy Validation trajectories. Wheel RMSE is in rad/s; arm RMSE
+is in Nm. Validation MSE is model-specific standardized-output error, not a
+common-scale ranking. These are action-prediction metrics, not control success.
+
+| Variant (inputs) | Val. MSE C→C | Val. MSE N→N | Wheel RMSE C→C | Wheel RMSE N→N | Arm RMSE C→C | Arm RMSE N→N |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline33 (33) | 0.02199 | 0.05376 | 0.09313 | 0.15727 | 0.33232 | 0.52336 |
+| Goal35 (35) | 0.02158 | 0.05407 | 0.09445 | 0.14485 | 0.32947 | 0.52569 |
+| Goal35 Reaching2 (35) | 0.02091 | 0.05306 | 0.09394 | 0.14834 | 0.32391 | 0.52000 |
+| History70 (70) | 0.02227 | 0.05378 | 0.10182 | 0.15046 | 0.33268 | 0.52353 |
+| Target37 (37) | 0.02176 | 0.05227 | 0.09327 | 0.14381 | 0.33107 | 0.51823 |
+| Target37 Filtered (37) | 0.02109 | 0.05374 | 0.09411 | 0.12354 | 0.32623 | 0.52596 |
+
+The full [MAE, RMSE and R² summary](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/summary.csv),
+[per-output results for all 11 actions](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/per_output.csv)
+and [comparison/provenance JSON](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/comparison.json)
+retain the unrounded values, sample counts and compatibility groups.
 
 | Saved figures | Clean → Clean | Noisy → Noisy |
 |---|---|---|
@@ -43,554 +118,156 @@ records included/skipped experiments, compatibility groups and source JSON hashe
 | Arm metrics (Nm) | [Clean arm](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/clean_a79c985218b2_arm.png) | [Noisy arm](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/noisy_35d59133d715_arm.png) |
 | Validation MSE and Training/Validation curves | [Clean diagnostics](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/clean_a79c985218b2_diagnostics.png) | [Noisy diagnostics](final/robotnik_arm_task/results/evaluations/saved_experiment_comparison/noisy_35d59133d715_diagnostics.png) |
 
-| Summary metric | Interpretation |
+## Experimental Results — Online Closed-Loop Evaluation
+
+**975 completed episodes = 13 controllers × the same 75 Validation targets.**
+Every controller receives **Noisy observations**, with matched per-target seeds
+and simulation configuration. Training condition is distinct from observation
+condition. The two saved runs contain 525 and 450 episodes respectively, with
+zero recorded evaluation failures or missing episodes in their summary CSVs.
+
+Success <5 cm means $\min_t e_{EE,true}(t)<0.05$ m; success <10 cm means
+$\min_t e_{EE,true}(t)<0.10$ m. These use true simulated EE error sampled every
+1 ms, including the terminal observation. There is no base, heading or additional
+time condition in these proximity metrics. Original stopping and safety behavior
+is retained. Mean Best EE and Mean Final EE below are both in **centimetres**.
+
+**Clean-trained MLPs, evaluated with Noisy observations**
+
+| Model | Episodes | Success <5 cm | Success <10 cm | Mean Best EE (cm) | Mean Final EE (cm) |
+|---|---:|---:|---:|---:|---:|
+| Baseline33 | 75 | 0/75 (0.00%) | 1/75 (1.33%) | 87.83 | 72,560.30 |
+| Goal35 | 75 | 0/75 (0.00%) | 0/75 (0.00%) | 94.80 | 68,077.46 |
+| Goal35 Reaching2 | 75 | 0/75 (0.00%) | 0/75 (0.00%) | 95.60 | 63,991.02 |
+| History70 | 75 | 1/75 (1.33%) | 2/75 (2.67%) | 81.17 | 73,445.72 |
+| Target37 | 75 | 0/75 (0.00%) | 3/75 (4.00%) | 73.52 | 63,562.42 |
+| Target37 Filtered | 75 | 0/75 (0.00%) | 2/75 (2.67%) | 67.34 | 83,045.51 |
+
+**Noisy-trained MLPs, evaluated with Noisy observations; Original Expert reference**
+
+| Model | Episodes | Success <5 cm | Success <10 cm | Mean Best EE (cm) | Mean Final EE (cm) |
+|---|---:|---:|---:|---:|---:|
+| Original Expert (not trained) | 75 | 75/75 (100.00%) | 75/75 (100.00%) | 0.46 | 0.47 |
+| Baseline33 | 75 | 6/75 (8.00%) | 18/75 (24.00%) | 23.97 | 8,300.01 |
+| Goal35 | 75 | 13/75 (17.33%) | 25/75 (33.33%) | 19.78 | 63.24 |
+| Goal35 Reaching2 | 75 | 15/75 (20.00%) | 32/75 (42.67%) | 15.94 | 4,562.95 |
+| History70 | 75 | 10/75 (13.33%) | 19/75 (25.33%) | 21.00 | 1,558.90 |
+| Target37 | 75 | 37/75 (49.33%) | 59/75 (78.67%) | 8.23 | 93.37 |
+| Target37 Filtered | 75 | 35/75 (46.67%) | 49/75 (65.33%) | 12.13 | 5,449.45 |
+
+**Noisy Target37 is the strongest D1 MLP by both closest-approach success rates:**
+49.33% at <5 cm and 78.67% at <10 cm. Clean-trained policies perform poorly under
+Noisy online observations even though their Clean offline metrics look strong.
+This illustrates the gap between action-prediction accuracy and feedback control.
+
+Closest approach does **not** establish stable final positioning, grasping or
+full-task completion. Several mean final errors are extremely large in the saved
+reports; they are shown without clipping or silently dropping episodes. Even
+Noisy Target37's mean final EE error is 93.37 cm versus 8.23 cm at closest approach.
+The original strict full-task fields remain in artifacts for provenance, but are
+not competing primary success rates here.
+
+| Complete saved run | Per-target report | Figures |
+|---|---|---|
+| [Original seven controllers: 525 episodes](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/summary.csv), [manifest](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/manifest.json) | [525-episode CSV](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/per_target.csv) | [Success rates](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/success_rates.png), [best EE distribution](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/best_ee_boxplot.png), [time to best](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_v1/time_to_best.png) |
+| [Remaining six MLPs: 450 episodes](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/summary.csv), [manifest](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/manifest.json) | [450-episode CSV](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/per_target.csv) | [Success rates](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/success_rates.png), [best EE distribution](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/best_ee_boxplot.png), [time to best](final/robotnik_arm_task/results/evaluations/ee_proximity_validation75_remaining6_v1/time_to_best.png) |
+
+## Final Hybrid Solution
+
+The [final MLP](MLP_demonstration/README.md#model) uses **20 inputs**, hidden layers
+**(128, 128, 64)** and **11 trained outputs**. Its inputs retain base pose, arm
+positions/velocities and target coordinates, omitting derived motion features.
+Training adds Gaussian noise with **standard deviation 0.02 to standardized
+training inputs only**; the scalers are fitted on D2 Training rows.
+
+The final engineering choice is a hybrid: **apply only the MLP's four wheel outputs**
+for navigation, and use Cartesian feedback, joint control and explicit task
+waypoints for manipulation. The seven learned arm-torque outputs are not applied.
+This model is **not** the winner of the D1 benchmark: it belongs to a separate D2
+training/evaluation pipeline and the living-room demonstrations.
+Its [saved D2 test metrics](MLP_demonstration/models_noise_0p020/mlp_test_metrics.json)
+are offline held-out action-prediction results, not a 75-target online benchmark.
+
+## Living-Room Demonstration (Tasks 1–3)
+
+Task 1 grasps and lifts one cube; Task 2 delivers it to a marked destination;
+Task 3 sorts red and blue cubes into matching destinations. Scene/task logic
+provides the targets and ordering; the MLP is not a visual object-recognition system.
+
+| Task | GUI guide | Video |
+|---|---|---|
+| 1 — Pick Up & Lift | [Task 1](MLP_demonstration/README.md#tasks) | [Task1.mp4](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task1.mp4) |
+| 2 — Pick Up & Deliver | [Task 2](MLP_demonstration/README.md#tasks) | [Task2.mp4](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task2.mp4) |
+| 3 — Object Sorting | [Task 3](MLP_demonstration/README.md#tasks) | [Task3.mp4](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task3.mp4) |
+
+## Project Structure
+
+| Folder | Purpose |
 |---|---|
-| Training Samples | Number of Training timesteps used to fit the model and scalers. |
-| Validation Samples | Number of held-out Validation timesteps; compare within the same dataset identity and sample count. |
-| Validation MSE | Mean squared error in the model's standardized output space; model-specific, not a common-scale ranking. |
-| Wheel/arm MAE | Mean absolute error, averaged over the four wheel or seven arm outputs; lower is better. |
-| Wheel/arm RMSE | Root mean squared error pooled within each group; lower is better and large errors receive more weight. |
-| Wheel/arm R² | Mean coefficient of determination over outputs with defined R²; higher is better, 1 is perfect, and negative values are possible. The table records how many outputs contribute. |
-| Best Epoch | Epoch selected by the lowest unweighted Validation MSE, including for Reaching2 training. |
+| [MLP_demonstration/](MLP_demonstration/) | Final hybrid architecture, Tasks 1–3, GUI code, saved final MLP and training scripts. |
+| [final/robotnik_arm_task/](final/robotnik_arm_task/) | D1 Expert/collection pipeline, 12 MLP experiments, checkpoints and evaluations; [detailed guide](final/robotnik_arm_task/README.md). |
+| [LSTM_experiment/](LSTM_experiment/) | Recurrent-policy checkpoint, offline validation results and [architecture documentation](LSTM_experiment/README.md). |
+| [ACT_experiment/](ACT_experiment/) | ACT policy/training configurations and locally saved state; [documented overview](ACT_experiment/README.md). |
 
-**Clean → Clean and Noisy → Noisy are separate comparisons.** Wheel errors use
-rad/s and arm errors use Nm; they are not pooled across units. Model-specific
-scaled MSE and learning curves use independent scales and must not be treated as
-a common-scale ranking. **Offline accuracy does not establish closed-loop success.**
+**Local dependencies:** `RoboEnv/` supplies simulator code, robot assets and the Pixi
+environment; obtain it from the authorised course/source distribution.
+`preprocessing_enhanced/` holds D2 CSVs, feature definitions and fitted scalers.
+The [demonstration setup guide](MLP_demonstration/README.md#d2-dataset-and-local-dependencies)
+explains the exact files. Published dataset assets do not by themselves supply
+the scalers or RoboEnv; no verified release asset for either was found.
 
-To refresh from saved reports, run from the project root:
+## Quick Start and Essential Commands
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml python ./final/robotnik_arm_task/train_mlp.py --refresh-saved-comparison
-```
-
-The reporter automatically discovers experiments under `results/experiments/`
-and includes completed runs with compatible saved metrics and metadata; no model
-list needs editing. Incompatible or incomplete runs are reported with reasons.
-It reads saved JSON only, without training, prediction, simulation, checkpoint
-loading or dataset/Test access. Refresh replaces only owned comparison artifacts
-in `results/evaluations/saved_experiment_comparison/`; unrelated or altered files
-cause refusal. Original experiment files remain unchanged. Figure filenames
-include a compatibility-group identifier and may change if dataset identity changes.
-Future ACT or Diffusion Policy experiments require compatible reporting metadata;
-they are not among the 12 trained MLP models documented here.
-
-## Project structure
-
-```text
-COMP0245-project/
-├── README.md
-├── MLP_demonstration/               # Final GUI demonstration (Tasks 1–3)
-├── RoboEnv/                         # Simulator, assets and Pixi environment
-├── final/robotnik_arm_task/          # MLP training, experiments, checkpoints and closed-loop evaluations
-│   ├── robotnik_arm_control.py      # Original Expert
-│   ├── robotnik_arm_task.py         # Original instructor example
-│   ├── generate_targets.py
-│   ├── generate_clean_dataset.py
-│   ├── generate_noisy_dataset.py
-│   ├── pipeline_common.py           # Shared collection and dataset logic
-│   ├── split_dataset.py
-│   ├── comp0245_data_quality.py
-│   ├── train_mlp.py                 # Existing training/evaluation CLI
-│   ├── result_paths.py              # Shared results locations
-│   ├── mlp/                        # Features, MLP class and offline metrics
-│   ├── configs -> ../../RoboEnv/configs
-│   ├── models  -> ../../RoboEnv/models
-│   └── results/
-│       ├── datasets/               # Targets, Expert exports and processed splits
-│       ├── experiments/            # Twelve full MLP model bundles
-│       ├── evaluations/            # New runs; existing results in historical/
-│       ├── figures/                # Shared figures and data-quality reports
-│       └── metadata/               # Manifest, split record and collection state
-├── ACT_experiment/                  # ACT experiments
-├── LSTM_experiment/                 # LSTM experiments
-├── ray_sensors/                     # Ray-sensor and obstacle-avoidance experiments
-├── preprocessing_enhanced/          # Supporting feature definitions and scalers
-└── provenance/                     # Migration hashes, source/data history
-```
-
-The preprocessing files and fitted scalers in `preprocessing_enhanced/` are stored
-locally and it is distributed separately through GitHub Releases, rather than
-committed to Git.
-
-The [instructor README](final/robotnik_arm_task/README.md) and Original Expert are
-preserved. Experiment selection still goes through `train_mlp.py`;
-`mlp/baseline33.py` is an informational declaration, not a separate CLI.
-
-## Environment and setup
-
-Complete the approved coordinated migration before using the paths below. The
-prepared code does not search the old layout or move artifacts automatically.
-
-Use **WSL Ubuntu** with the existing RoboEnv **Pixi `ml` environment**.
-Its definitions are `RoboEnv/pixi.toml` and `RoboEnv/pixi.lock`. The consolidated
-project already contains its dependencies and datasets; no installation or data
-generation is needed for this demo. Live PyBullet requires working WSL GUI support.
-
-**Command status: all sequences below are UNVERIFIED on the current refactored
-project.** Arguments and artifact paths were inspected, but these sequences were
-not executed for this README. Run commands individually.
-
-Activate the existing environment, then return to the project root:
+Run these commands from the repository root with an already prepared local
+RoboEnv Pixi `ml` environment and the matching local D2 feature definitions/scalers.
+GUI display support is required. No retraining is needed.
 
 ```bash
-cd /home/amrfg/COMP0245-project/RoboEnv
-pixi shell -e ml
-cd /home/amrfg/COMP0245-project
+# Task 1 — Pick Up & Lift
+pixi run --manifest-path ./RoboEnv/pixi.toml -e ml python ./MLP_demonstration/mlp_wheels_arm_reach_gui_task1.py
 
-task=final/robotnik_arm_task
-results="$task/results"
-py="$PWD/RoboEnv/.pixi/envs/ml/bin/python"
+# Task 2 — Pick Up & Deliver
+pixi run --manifest-path ./RoboEnv/pixi.toml -e ml python ./MLP_demonstration/mlp_wheels_arm_reach_gui_task2.py
+
+# Task 3 — Object Sorting
+pixi run --manifest-path ./RoboEnv/pixi.toml -e ml python ./MLP_demonstration/mlp_wheels_arm_reach_gui_task3.py
 ```
 
-Keep these variables in the same shell for the commands below. For a future
-environment rebuild, consult the [RoboEnv setup guide](RoboEnv/README.md) and select
-its `ml` environment.
-
-## Experiments
-
-All saved models use hidden layers **[128, 128, 64]**, ReLU activations and a linear
-11-output layer. Feature definitions are shared between offline and online use.
-
-Saved full-run directories below are under `final/robotnik_arm_task/results/experiments/`.
-
-| Experiment | Inputs / CLI selector | Difference | Saved full run |
-|---|---|---|---|
-| Baseline33 | 33 / `baseline33` | Original ordered observations; clean and noisy models | `mlp_clean_scaled_full/`, `mlp_noisy_scaled_full/` |
-| Goal35 | 35 / `goal35` | Baseline plus distance and signed heading error to the navigation goal | `mlp_clean_goal35_scaled_full/`, `mlp_noisy_goal35_scaled_full/` |
-| Goal35 Reaching2 | 35 / `goal35 --weight-reaching` | Training weight 2 after recorded navigation completion, otherwise 1; validation remains unweighted | `mlp_clean_goal35_reaching2_scaled_full/`, `mlp_noisy_goal35_reaching2_scaled_full/` |
-| History70 | 70 / `history70` | Current Goal35 plus its 100 ms history, padded with the first observation at startup | `mlp_clean_history70_scaled_full/`, `mlp_noisy_history70_scaled_full/` |
-| Target37 | 37 / `target37` | Baseline plus target-relative body X/Y, planar distance and wrapped heading error | `mlp_clean_target37_scaled_full/`, `mlp_noisy_target37_scaled_full/` |
-| Target37 Filtered | 37 / `target37_filtered` | Causal two-stage pose smoothing, then derivatives for six base-motion slots; 20 ms per stage | `mlp_clean_target37_filtered_scaled_full/`, `mlp_noisy_target37_filtered_scaled_full/` |
-
-The filtered slots are `base_vx`, `base_vy`, `base_yaw_rate`, `base_ax`,
-`base_ay` and `base_yaw_acc`. Arm and Target37 geometry features are unchanged.
-History and filter state reset between trajectories and continue across CSV chunks.
-
-Historical `mlp_noisy_goal35_scaled_pilot/`, `mlp_noisy_history70_scaled_pilot/`
-and `mlp_clean_scaled_smoke/` bundles move to
-`/home/amrfg/COMP0245-archive/results/`. Pilots use 36 selected training targets;
-they are not full-training comparisons. All historical bundles are preserved
-separately from the 12 completed full-training models.
-
-## Existing results
-
-Each trained bundle contains:
-
-- `best_model.pt`: weights, configuration, ordered features, fitted scaler
-  statistics and provenance. Scalers are embedded, not separate files.
-- `metrics.json`: final training/validation metrics and configuration.
-- `history.json` and `learning_curve.png`: historical epoch-end curves.
-
-The six split CSVs are in `results/datasets/processed_data/`. The original Expert
-exports and `targets_500.csv` are also under `results/datasets/`.
-`results/metadata/` holds `pipeline_state.sqlite`, `pipeline_manifest.json`,
-`split_validation.json` and collection metadata/statistics. Scalers remain inside
-their unchanged experiment bundles.
-
-Offline metrics include per-output MAE, RMSE and R², wheel/arm group summaries and
-standardized-output MSE. Wheel and arm errors have different units. Scaled MSE
-uses each model's output scaler; offline prediction accuracy does not establish
-closed-loop success.
-
-Existing closed-loop JSON files are in `results/evaluations/historical/`.
-They record target, observation condition, checkpoint,
-source hashes, terminal errors, navigation timeout and strict success.
-Baseline33 and Target37 have noisy-observation evaluations on targets
-**3, 28, 48, 53 and 131**. Filtered has one saved evaluation, on target 3.
-Other Goal35/History70 results use different targets or observation conditions;
-do not pool these as one matched benchmark.
-
-`results/evaluations/historical/mlp_cross_condition_comparison.json` compares the two Baseline33 models on
-clean/noisy validation observations. It is **not an all-experiment comparison**.
-The unified `--refresh-saved-comparison` CLI compares saved same-condition results
-across all compatible completed experiments; see the results section above.
-
-Existing plots move intact to `results/figures/dataset_historical/`.
-The manifest identifies plots and `results/metadata/feature_distributions_noisy.csv`
-as predating the Target335 replacement. Preserve that historical label; the HTML
-report's precise data revision should be checked from its own provenance. New
-collection plots use `results/figures/dataset/`, and new data-quality HTML must
-use an unused path under `results/figures/`.
-
-## Demo — no retraining
-
-Steps A–F only inspect saved artifacts. They do not load model weights, perform
-inference, regenerate data or write results. Step G is an optional new simulation.
-
-### A. Datasets and target distribution
-
-List dataset files without opening held-out test rows, then display the saved split
-summary:
-
-```bash
-ls -lh "$results"/datasets/processed_data/*.csv
-cat "$results/metadata/split_validation.json"
-```
-
-Open the [target/split distribution](final/robotnik_arm_task/results/figures/dataset_historical/target_distribution_xy_split.png)
-and [stratum distribution](final/robotnik_arm_task/results/figures/dataset_historical/target_distribution_strata.png)
-in the editor. The [saved data-quality report](final/robotnik_arm_task/results/figures/dataset_historical/comp0245_data_quality.html)
-provides historical context.
-
-### B. Trained models and configuration
-
-```bash
-ls -lh "$results"/experiments/mlp_*/best_model.pt
-"$py" -B -c 'import json,sys; m=json.load(open(sys.argv[1],encoding="utf-8-sig")); print(json.dumps({k:m.get(k) for k in ("feature_set","configuration","hidden_layers","best_epoch")},indent=2))' \
-  "$results/experiments/mlp_noisy_target37_scaled_full/metrics.json"
-```
-
-Change the `metrics.json` path to inspect another bundle. Old Windows paths in
-saved metadata describe the original run; current commands use local WSL paths.
-
-### C. Historical training and validation curves
-
-```bash
-ls -lh "$results"/experiments/mlp_*/learning_curve.png
-```
-
-Open the saved curves for [noisy Baseline33](final/robotnik_arm_task/results/experiments/mlp_noisy_scaled_full/learning_curve.png),
-[Target37](final/robotnik_arm_task/results/experiments/mlp_noisy_target37_scaled_full/learning_curve.png)
-and [Filtered](final/robotnik_arm_task/results/experiments/mlp_noisy_target37_filtered_scaled_full/learning_curve.png).
-They show training and validation MSE evaluated at each epoch's final model.
-
-### D. Existing offline metrics
-
-```bash
-"$py" -B -c 'import json,sys; m=json.load(open(sys.argv[1],encoding="utf-8-sig")); print(json.dumps(m["validation"],indent=2))' \
-  "$results/experiments/mlp_noisy_target37_scaled_full/metrics.json"
-```
-
-Use `m["training"]` instead to display saved training metrics.
-
-### E. Available model comparison
-
-For the 12-model same-condition comparison, open the linked summary and figures
-in the results section above. The following existing command prints the historical
-Baseline33 cross-condition comparison:
-
-```bash
-"$py" -B - "$results/evaluations/historical/mlp_cross_condition_comparison.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8-sig") as handle:
-    comparison = json.load(handle)
-print("Model | observations | wheel pooled RMSE (rad/s) | arm pooled RMSE (Nm)")
-for model, conditions in comparison["results"].items():
-    for condition, result in conditions.items():
-        groups = result["metrics"]["groups"]
-        print(model, condition, groups["wheels"]["pooled_rmse"],
-              groups["arm"]["pooled_rmse"], sep=" | ")
-PY
-```
-
-This reads existing metrics. Do not rerun `--evaluate-cross` for the demo: that mode
-performs fresh validation inference and writes a new comparison under `evaluations/`.
-
-### F. Existing closed-loop results
-
-```bash
-"$py" -B - "$results/evaluations/historical/closed_loop_target3_clean.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8-sig") as handle:
-    book = json.load(handle)
-print("Target:", book["identity"]["target_id"],
-      "Observations:", book["identity"]["observations"])
-for name, episode in book["episodes"].items():
-    print(name, "best_true_ee_error_m:", episode.get("best_true_ee_error_m", "not recorded"),
-          "ee_success_5cm:", episode.get("ee_success_5cm", "not recorded"),
-          "ee_success_10cm:", episode.get("ee_success_10cm", "not recorded"),
-          "navigation_timeout:", episode.get("navigation_timeout"),
-          "stop:", episode.get("stop_reason"))
-PY
-```
-
-Open the [saved three-controller comparison](final/robotnik_arm_task/results/figures/closed_loop_target3_clean.png)
-and [detailed analysis](final/robotnik_arm_task/results/figures/closed_loop_target3_clean_analysis.png).
-This historical Target3/clean-observation comparison contains Expert success and
-MLP failures; it is not evidence of successful learned control.
-
-### G. Optional live PyBullet rollout — UNVERIFIED
-
-This uses the existing Target37 checkpoint on validation target 3 with noisy
-observations. It runs a full episode, without retraining or diagnostic wheel
-interventions, and saves a **new** episode JSON:
-
-```bash
-"$py" -B "$task/train_mlp.py" \
-  --closed-loop --controller target37 --target-id 3 --observations noisy \
-  --target37-output "$results/evaluations/target37_demo_target3_001" \
-  --gui --playback-speed 1
-```
-
-The default checkpoint is
-`results/experiments/mlp_noisy_target37_scaled_full/best_model.pt`.
-The output must be a new `target37_*` directory directly under `results/evaluations/`;
-the runner rejects an existing destination. Choose a new suffix for another run.
-This single-controller command does not produce the historical three-controller
-comparison figure.
-
-GUI playback affects wall-clock speed, not the 1 ms simulation timestep.
-Performance uses the best true EE distance observed during the episode:
-`ee_success_5cm` means strictly <0.05 m and `ee_success_10cm` means strictly
-<0.10 m. Legacy strict/collection fields remain for provenance and stopping only.
-
-Source/checkpoint compatibility checks remain active. If they reject a run, stop
-and inspect the mismatch; do not replace hashes, overwrite history or bypass checks.
-
-## Optional training — not part of the demo
-
-**UNVERIFIED example; this starts training.** Run only when a new experiment is
-intended, with a destination that does not exist:
-
-```bash
-"$py" -B "$task/train_mlp.py" \
-  --results "$results" \
-  --output "$results/experiments/mlp_noisy_target37_scaled_full_rerun_001" \
-  --feature-set target37 --condition noisy --preprocessing scaled \
-  --full-train --seed 42 --learning-rate 0.001 \
-  --batch-size 1024 --chunk-rows 65536 \
-  --epochs 30 --patience 5 --device cpu
-```
-
-Training streams CSV chunks, fits input/output StandardScalers on selected
-training rows only, uses Adam and standardized-output MSE, and selects the best
-checkpoint by strictly improving unweighted validation MSE. Shuffling is within
-each chunk using seed + epoch. Training stops after five consecutive epochs
-without validation improvement.
-
-Use the experiment selector in the table for other models; Reaching2 adds
-`--weight-reaching` to `--feature-set goal35`. All six trained variants support
-Clean and Noisy training. Every training output must be a new directory directly under
-`results/experiments/`; its checkpoint, metrics, configuration and learning curve
-stay together.
-Omitting `--full-train` selects a pilot for Baseline33, or for Noisy Goal35/History70;
-Clean Goal35/History70 require full training. Target37 and Target37 Filtered require
-the full scaled CPU configuration shown above, with the selected condition.
-Their Noisy runs require an output prefix `mlp_noisy_<feature-set>_`;
-Clean Goal35/History70/Target37 variants require their exact directories listed
-in the experiment table.
-The CLI rejects existing output directories.
-
-## Reproducibility and provenance
-
-Target generation uses seed **42**; target-level stratified splitting uses
-**314159**. Full models use training seed **42**. The manifests record target IDs,
-ordered schemas, dataset hashes and production source identities. Training and
-evaluation use training-fitted scalers; held-out test trajectories are not used
-for tuning.
-
-Historical weights, configurations, Windows path strings and result hashes are
-preserved. Migration SHA256 records are in `provenance/migration_stage_c_001/`;
-original runner snapshots are in `provenance/source_snapshots/`. Other archived
-collection/replacement evidence remains inside `provenance/`, not external storage.
-The two DAgger and four Expert-qualification bundles move to
-`/home/amrfg/COMP0245-archive/results/`, alongside the three pilot/smoke bundles.
-They remain research history, not inputs to the listed MLP experiments or approved
-training data. New DAgger/qualification outputs must be new directories under
-`results/datasets/collections/`.
-
-**Historical collection/resume and Target335 republication are frozen.** Moving
-files does not make refactored collector source match the original manifest or
-SQLite identity. Future collection requires a new provenance revision and new
-state; do not replace historical expected hashes or repurpose the preserved
-collection database. Generation, collection and splitting code now targets the
-new layout, but its historical identity checks still reject incompatible runs.
-
-Refactoring changes the runner hash. Historical summaries retain their original
-identities and may be rejected for appending by the existing checks. Runner-only
-source hashes do not yet fingerprint all extracted modules. Keep new demo results
-separate from historical results; compare only matched targets, observation
-conditions and evaluation protocols.
-
-
-## PyBullet GUI — Demo Commands
-
-This section demonstrates the Original Expert and seven of the 12 trained MLP models
-using PyBullet simulation. These commands retain the existing checkpoint selections;
-the additional Clean variants in the offline comparison are not selected here.
-
-All commands run from the project root in WSL Ubuntu:
-
-```bash
-cd ~/COMP0245-project
-```
-
-The `--no-save` option allows repeated simulations without generating new result files. Playback speed is set to 3.
-
-### 1. Original Expert — Target 30
-
-The original controller combines mobile base navigation and robotic arm control to generate expert demonstrations.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller expert --target-id 30 --observations noisy --no-save
-```
-
-### 2. Baseline33 — Clean Trained — Target 30
-
-An MLP trained with 33 input features using clean expert demonstrations.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller clean --target-id 30 --observations noisy --no-save
-```
-
-### 3. Baseline33 — Noisy Trained — Target 30
-
-The same 33-input MLP architecture trained on noisy demonstrations to improve robustness to measurement noise.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller noisy --target-id 30 --observations noisy --no-save
-```
-
-### 4. Goal35 — Target 39
-
-Added distance to the navigation goal and heading error, increasing the input size to 35.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller goal35 \
---goal35-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_goal35_scaled_full/best_model.pt \
---target-id 39 --observations noisy --no-save
-```
-
-### 5. Goal35 Reaching2 — Target 39
-
-The same 35 features, with double training loss weight during the reaching phase.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller goal35 \
---goal35-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_goal35_reaching2_scaled_full/best_model.pt \
---target-id 39 --observations noisy --no-save
-```
-
-### 6. History70 — Target 46
-
-Extended Goal35 with observations from 100 ms earlier, producing 70 input features.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller history70 \
---history70-checkpoint final/robotnik_arm_task/results/experiments/mlp_noisy_history70_scaled_full/best_model.pt \
---target-id 46 --observations noisy --no-save
-```
-
-### 7. Target37 — Target 3
-
-Added four target-relative features: body-frame X/Y position, planar distance and heading error.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller target37 --target-id 3 \
---observations noisy --no-save
-```
-
-### 8. Target37 Filtered — Target 53
-
-Applied causal two-stage smoothing to estimate six base motion features, reducing sensitivity to noisy derivatives.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --gui --playback-speed 3 \
---controller target37_filtered --target-id 53 \
---observations noisy --no-save
-```
-
-### EE Proximity Success — Single and Multiple Targets
-
-All closed-loop controllers (Original Expert, Clean/Noisy MLP, Goal35, History70,
-Target37 and Target37 Filtered), plus Expert 2 reporting, use only these two
-performance metrics:
-
-- `ee_success_5cm`: minimum true EE distance during the episode is strictly <0.05 m.
-- `ee_success_10cm`: minimum true EE distance during the episode is strictly <0.10 m.
-
-These are closest-approach metrics, not final-position or full-task success.
-Reaching <5 cm always also counts toward <10 cm. There are no base-position,
-heading, navigation-completion, time or safety-success conditions in these flags.
-They use ground-truth EE error at every observed 1 ms step, including the terminal
-observation, never noisy measured EE error or just the saved 10 ms trace.
-Stopping conditions, noise, predictions and safety guards remain unchanged.
-
-Terminal output preserves the complete original `stop_reason`, including any
-closest-pose time, best EE error and current EE error in the stopping message.
-Those stopping diagnostics use measured EE observations and their existing
-improvement policy. The separately labelled minimum true EE error is the
-ground-truth closest approach used exclusively for the two proximity metrics.
-
-Each episode reports target ID, controller, best true error in metres and
-centimetres, both proximity flags, and evaluation status. Per-model summaries
-report completed target counts, counts reaching each threshold, and percentages.
-Missing checkpoints, interrupted runs and guard failures are listed separately;
-partial observations can retain proximity flags but do not enter completed-target
-rates. No completed targets means unavailable rates, not 0%. Genuine short
-interface checks are not evaluated; full Expert qualification/collection episodes
-are assessed independently of their internal `interface_steps` setting.
-Completed status is published only after checkpoint/source integrity checks pass.
-Expert 2 custom tasks are labelled without a
-Validation target ID and must not be pooled with Validation-target comparisons.
-
-Existing benchmark tolerance calculations and historical compatibility fields
-remain available internally for diagnostics and provenance. They are excluded
-from the primary EE proximity performance summary.
-
-New reports/figures use `_ee_proximity_v2` filenames; historical results remain
-untouched. Legacy `strict_success` fields remain for research provenance and
-stopping logic, not as primary model-performance reports. Historical reports
-without the new fields show "not recorded"; sampled traces are not backfilled.
-
-For Target37 on Validation Target 3, a best true error of about 0.01667 m
-(1.667 cm) counts toward both thresholds regardless of the final EE error.
-
-To compare targets, replace `--target-id` with `--target-ids` and specify multiple
-Validation targets. Use the same target IDs and observation conditions for every
-model; compare both proximity rates alongside completed counts and failures.
-
-Example for Baseline33 Noisy:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 pixi run --manifest-path ./RoboEnv/pixi.toml -e ml \
-python ./final/robotnik_arm_task/train_mlp.py \
---closed-loop --controller noisy \
---target-ids 3 28 30 48 53 \
---observations noisy --no-save
-```
-
-The terminal reports every target and the per-model <5 cm and <10 cm counts and
-success rates, with evaluation failures listed separately. `--no-save` comparisons
-print the report without writing files; saved single-target reports include the
-same metrics and per-model aggregates.
-
-For a fair comparison, evaluate all controllers using the same validation target IDs and observation conditions.
-
-**Notes:**
-
-- These demonstrations use pretrained checkpoints only.
-- No training or dataset generation is performed.
-- `--no-save` prevents new evaluation reports from being generated.
-- Offline accuracy does not guarantee successful closed-loop robot behaviour.
-- Commands for models not yet tested with `--no-save` should be verified before the live demonstration.
-
-
+See the [task guide and existing PowerShell command](MLP_demonstration/README.md#tasks)
+for details. For research commands, use [Commands and CLI Arguments](final/robotnik_arm_task/README.md#commands-and-cli-arguments),
+which covers the Original Expert, MLP inference, offline reporting, qualification
+and resumable closed-loop evaluation. The [offline evaluation reference](final/robotnik_arm_task/README.md#offline-evaluation)
+and [online closed-loop reference](final/robotnik_arm_task/README.md#online-closed-loop-evaluation)
+explain saved reports and fair comparisons.
+
+## Reproducibility and GitHub Releases
+
+### Datasets & Downloads
+
+| Release | Verified contents and use |
+|---|---|
+| [D1 — COMP0245 data v1.0](https://github.com/RehamFaqehi1/COMP0245-project/releases/tag/comp0245-data-v1.0) | Clean/Noisy Expert exports, target-level split CSVs, historical collection database and checksum files, in numbered compressed parts. Follow the release's reconstruction/checksum instructions without overwriting existing data. |
+| [D2 — COMP0245 data v2.0](https://github.com/RehamFaqehi1/COMP0245-project/releases/tag/comp0245-data-v2.0) | Enhanced CSVs (four Train parts, one Validation part, one Test part) and dataset manifest; reconstruct parts in numeric order and verify the published checksums. |
+| [Demonstration videos v1.0](https://github.com/RehamFaqehi1/COMP0245-project/releases/tag/comp0245-demo-v1.0) | [Task 1](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task1.mp4), [Task 2](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task2.mp4), [Task 3](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task3.mp4). |
+
+The release asset listings were checked on 6 November 2026. D2's listed assets
+contain no `.joblib` scalers or feature-definition JSON; those must be supplied
+separately and kept consistent with the saved model. RoboEnv availability is not
+implied by a dataset release.
+
+### Reproducibility notes
+
+- Dataset identities, target splits, checkpoint/scaler provenance and source hashes
+  matter. Preserve saved metrics and historical JSON rather than editing their hashes.
+- The 975-episode results use only Validation targets, Noisy observations and
+  matched seeds; offline same-condition evaluation and D2 test metrics answer
+  different questions. LSTM/ACT and the living-room tasks are separate experiments.
+- Current Validation reporting refuses existing destinations except for explicit,
+  compatible `--resume`: completed and failed episodes are skipped; interrupted
+  episodes restart from their seeded initial state. Missing/failed evaluations are
+  shown separately and do not enter completed-episode success denominators.
+- Source changes can prevent resuming old runs. Keep the two completed evaluation
+  directories immutable and use a new unused output path for a new experiment.
+- Long-form configuration tables, historical results/figures, setup variables,
+  integrity constraints and commands remain in the [MLP experiments README](final/robotnik_arm_task/README.md).
+  The instructor's [original instructions](final/robotnik_arm_task/INSTRUCTOR_README.md) are preserved.

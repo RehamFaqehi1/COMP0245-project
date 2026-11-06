@@ -10,6 +10,12 @@ from result_paths import DATASETS, FIGURES, METADATA
 
 
 def plot_targets(targets, groups):
+    """Save split-aware workspace plots, stratum counts and XYZ histograms.
+
+    Args:
+        targets: Rows of (target ID, x, y, z), with coordinates in metres.
+        groups: Mapping from split names to their target-ID sets.
+    """
     import numpy as np
     with tempfile.TemporaryDirectory(prefix='comp0245-plots-') as cache:
         previous = os.environ.get('MPLCONFIGDIR'); os.environ['MPLCONFIGDIR'] = cache
@@ -75,6 +81,7 @@ def plot_targets(targets, groups):
 
 
 def main():
+    """Create the paired target CSV, provenance manifest and plots without overwrite."""
     paths = [RESULTS/DATASETS/'targets_500.csv', RESULTS/METADATA/'pipeline_manifest.json',
              RESULTS/METADATA/'pipeline_state.sqlite']
     figures = ['xy_split','distance_height','strata','xyz']

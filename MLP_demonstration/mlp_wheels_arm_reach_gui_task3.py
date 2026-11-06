@@ -275,7 +275,7 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    checkpoint = torch.load(CHECKPOINT, map_location=device, weights_only=True)
+    checkpoint = torch.load(CHECKPOINT, map_location=device, weights_only=False)
     if checkpoint.get("input_columns") != MLP_INPUT_COLUMNS:
         raise ValueError("Checkpoint input feature order does not match mlp_data.")
     if checkpoint.get("output_columns") != OUTPUT_COLUMNS:
@@ -832,7 +832,7 @@ def main():
                 break
 
             # ------------------------------------------------
-            # MLP prediction (learned arm torques are intentionally unused)
+            # MLP prediction 
             # ------------------------------------------------
 
             actions = predict_actions(model, state, x_scaler, y_scaler, device)

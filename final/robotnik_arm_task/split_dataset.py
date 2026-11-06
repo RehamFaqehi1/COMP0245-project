@@ -7,6 +7,7 @@ from result_paths import DATASETS, METADATA
 
 
 def validate_csv(path, targets, groups):
+    """Validate all 500 trajectories and return sample counts for each target split."""
     seen = set(); current = previous = None; counts = {'train':0,'validation':0,'test':0}
     with path.open(newline='') as f:
         reader = csv.DictReader(f)
@@ -23,6 +24,7 @@ def validate_csv(path, targets, groups):
 
 
 def main():
+    """Verify accepted Clean/Noisy exports and split whole trajectories by target ID."""
     _,_,targets,groups = verify_plan()
     expected = {'train':350,'validation':75,'test':75}
     for name,n in expected.items():

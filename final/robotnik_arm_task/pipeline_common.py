@@ -24,6 +24,9 @@ else:
     from result_paths import RESULTS, DATASETS, FIGURES, METADATA, COLLECTIONS
 
 sys.dont_write_bytecode = True
+# ============================================================
+# Configuration and dataset schema
+# ============================================================
 TASK = Path(__file__).resolve().parent
 PROJECT = TASK.parents[1]
 ROBOENV = PROJECT / 'RoboEnv'
@@ -46,7 +49,11 @@ HEIGHT = [('low', .3, .5), ('medium', .5, .8), ('high', .8, 1.1)]
 STRATA = [(q, d[0], h[0]) for q in range(4) for d in DIST for h in HEIGHT]
 
 
+# ============================================================
+# Target planning and integrity checks
+# ============================================================
 def stratum_of(x, y, z):
+    """Return the quadrant, radial band and height band for a target in metres."""
     distance = math.hypot(x, y)
     angle = math.degrees(math.atan2(y, x)) % 360
     q = min(int(angle // 90), 3)
@@ -120,12 +127,14 @@ def sha(path):
 
 
 def json_new(path, obj):
+    """Write a JSON artifact only if the destination does not already exist."""
     with Path(path).open('x', encoding='utf-8') as f:
         json.dump(obj, f, indent=2, allow_nan=False)
         f.write('\n')
 
 
 def source_hashes():
+    """Hash collection sources and the required RoboEnv configuration and assets."""
     paths = [TASK / 'pipeline_common.py', TASK / 'robotnik_arm_control.py',
              TASK / 'generate_targets.py', TASK / 'generate_clean_dataset.py',
              TASK / 'generate_noisy_dataset.py', TASK / 'split_dataset.py', TASK / 'result_paths.py',
@@ -138,6 +147,7 @@ def source_hashes():
 
 
 def version_info():
+    """Record the interpreter, platform and installed simulator dependency versions."""
     names = ('numpy', 'scipy', 'pin', 'pinocchio', 'pybullet', 'matplotlib')
     versions = {}
     for name in names:
@@ -149,6 +159,11 @@ def version_info():
 
 
 def verify_plan(root=RESULTS):
+    """Validate source identity, target hashes, strata and split membership.
+
+    Returns:
+        Resolved results root, manifest, target rows and target-ID-to-split map.
+    """
     root = Path(root).resolve()
     manifest = json.loads((root / METADATA / 'pipeline_manifest.json').read_text())
     if manifest['source_sha256'] != source_hashes():
@@ -206,6 +221,11 @@ class Features:
         self.p = self.yaw = self.v = self.w = self.qd = None
 
     def build(self, p, yaw, q, qd, target):
+        """Return 33 finite inputs and update the 1 ms derivative history.
+
+        The joint arrays use simulator order; indices 4:11 contain the arm.
+        The first observation uses zero finite-difference derivatives.
+        """
         import numpy as np
         v = np.zeros(2) if self.p is None else (p[:2] - self.p[:2]) / DT
         w = 0. if self.yaw is None else float(np.arctan2(np.sin(yaw-self.yaw), np.cos(yaw-self.yaw)) / DT)
@@ -220,6 +240,7 @@ class Features:
 
 
 def check_sample(row, target, previous_time, seen_id):
+    """Validate one stored sample and return its time for the next row's check."""
     import math
     if set(row) != set(HEADER) or int(row['trajectory_id']) != seen_id:
         raise ValueError('Sample schema/ID mismatch')
@@ -237,6 +258,7 @@ def check_sample(row, target, previous_time, seen_id):
 
 
 def print_schema():
+    """Print the ordered expert inputs and outputs with their physical units."""
     print('33 inputs (ordered):')
     for i, (name, unit) in enumerate(zip(INPUTS, UNITS), 1):
         print(f'{i:2} {name:16} {unit}')
@@ -289,6 +311,7 @@ def open_state(root=RESULTS, initialisation=None):
 
 
 def attempt_records(db, condition):
+    """Read collection attempts in target/attempt order, including failures."""
     records = []
     for tid, attempt, status, result in db.execute(
             'SELECT target_id,attempt,status,result FROM attempts WHERE condition=? ORDER BY target_id,attempt', (condition,)):
@@ -299,6 +322,7 @@ def attempt_records(db, condition):
 
 
 def successes(records):
+    """Index successful attempts by target ID, rejecting duplicate successes."""
     result = {}
     for r in records:
         if r['status'] == 'success':
@@ -322,6 +346,7 @@ class SampleChunks:
             self.flush()
 
     def flush(self):
+        """Commit buffered samples only while this worker owns the running attempt."""
         if self.rows:
             # A resumed supervisor may have marked an orphan worker interrupted.
             # It must not be allowed to publish data after that decision.
@@ -336,11 +361,15 @@ class SampleChunks:
 
 
 def sample_rows(db, condition, tid, attempt):
+    """Yield an attempt's stored CSV rows in chunk order without loading it all."""
     for payload, in db.execute('SELECT payload FROM chunks WHERE condition=? AND target_id=? AND attempt=? ORDER BY chunk_no',
                               (condition, tid, attempt)):
         yield from csv.DictReader(io.StringIO(zlib.decompress(payload).decode('utf-8')), fieldnames=HEADER)
 
 
+# ============================================================
+# Expert trajectory collection
+# ============================================================
 def run_attempt(condition, tid, attempt, root=RESULTS, initial_joint6=None):
     """Original expert loop, with isolated instance-only noise and chunked storage."""
     _, _, targets, _ = verify_plan()
@@ -496,6 +525,18 @@ def run_attempt(condition, tid, attempt, root=RESULTS, initial_joint6=None):
 
 
 def collect_condition(condition, max_attempts, target_ids=None, root=RESULTS, initial_joint6=None):
+    """Resume expert collection, then export only a complete requested target set.
+
+    Args:
+        condition: Clean or noisy observation condition ('clean' or 'noisy').
+        max_attempts: Cumulative attempt limit per target, including earlier runs.
+        target_ids: Optional subset; selected targets require a separate root.
+        root: Collection output root containing the checkpoint database.
+        initial_joint6: Optional initial angle in radians for a separate pose profile.
+
+    Returns:
+        Zero when every requested target succeeded, otherwise one.
+    """
     _, _, targets, _ = verify_plan()
     if max_attempts < 1:
         raise ValueError('--max-attempts must be positive')
@@ -558,6 +599,9 @@ def collect_condition(condition, max_attempts, target_ids=None, root=RESULTS, in
             db.close()
 
 
+# ============================================================
+# Dataset export and reporting
+# ============================================================
 def export_condition(db, condition, targets, good, root=RESULTS):
     """Only complete successes enter the flat combined CSV; incomplete files stay flagged."""
     if root == RESULTS and set(good) != set(range(1,501)):
@@ -586,6 +630,7 @@ def export_condition(db, condition, targets, good, root=RESULTS):
 
 
 def dataset_main(condition):
+    """Parse collector options and dispatch a supervisor or its reserved worker."""
     import argparse
     parser = argparse.ArgumentParser(description=f'Generate/resume all 500 {condition} trajectories, export and plot.')
     parser.add_argument('--max-attempts',type=int,default=2)

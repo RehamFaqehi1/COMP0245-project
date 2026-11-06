@@ -1,4 +1,7 @@
-"""Shared offline MLP metrics and closed-loop EE proximity reporting."""
+"""Shared offline MLP metrics and closed-loop EE proximity reporting.
+
+Aggregate episode records and write CSV/PNG reports without running simulations.
+"""
 
 import math
 
@@ -6,6 +9,10 @@ import numpy as np
 
 from .features import HISTORY_POLICY, INPUTS, OUTPUTS, transform
 
+
+# ============================================================
+# CLOSED-LOOP EE PROXIMITY REPORTING
+# ============================================================
 
 def ee_proximity(minimum_error):
     """Closest observed true EE approach; no task-state or time requirements."""
@@ -57,7 +64,25 @@ def print_proximity_report(episodes):
         print(name, summary)
 
 
+# ============================================================
+# OFFLINE VALIDATION METRICS AND SAVED COMPARISONS
+# ============================================================
+
 def evaluate(model, chunks, xs, ys, device, feature_set='baseline33'):
+    """Accumulate offline command errors over streamed observation/action chunks.
+
+    Args:
+        model: Trained eleven-output regressor, already on the requested device.
+        chunks: Iterable of unscaled feature rows and physical-unit action rows.
+        xs: Fitted input scaler, or None for raw-input experiments.
+        ys: Fitted output scaler used to recover physical command units.
+        device: PyTorch inference device.
+        feature_set: Feature-schema label passed to input scaling.
+
+    Returns:
+        Sample count, scaled MSE, and per-output and wheel/arm MAE, RMSE and R2.
+    """
+    # Keep PyTorch optional for callers that only aggregate closed-loop records.
     import torch
 
     count = 0
@@ -78,6 +103,7 @@ def evaluate(model, chunks, xs, ys, device, feature_set='baseline33'):
                 k = len(actual)
                 avg = actual.mean(axis=0)
                 delta = avg-mean
+                # Merge batch variance without retaining the full evaluation stream.
                 m2 += ((actual-avg)**2).sum(axis=0) + delta**2*count*k/(count+k)
                 mean += delta*k/(count+k)
                 count += k
@@ -396,8 +422,18 @@ def refresh_saved_comparison(root):
     print(warning)
 
 
+# ============================================================
+# ATOMIC VALIDATION REPORT OUTPUT
+# ============================================================
+
 def atomic_report(path, write, binary=False):
-    """Replace an owned report/state file atomically and durably (WSL/Linux)."""
+    """Replace an owned report/state file atomically and durably (WSL/Linux).
+
+    Args:
+        path: Destination in an existing, caller-owned output directory.
+        write: Callback that writes the report to an open temporary file.
+        binary: Open the temporary file in binary mode, for example for a PNG.
+    """
     import os
     import tempfile
 
@@ -423,6 +459,7 @@ def atomic_report(path, write, binary=False):
 
 
 def atomic_json(path, value):
+    """Save JSON through atomic_report, rejecting nonfinite numeric values."""
     import json
 
     atomic_report(path, lambda handle: json.dump(
@@ -435,6 +472,15 @@ def write_validation_reports(output, episodes, controllers, plots=False):
     Failed episodes are recorded and skipped on resume. Interrupted episodes
     restart from the original seeded initial state; completed episodes never rerun.
     Missing rows mean not yet attempted, not failure or success.
+
+    Args:
+        output: Existing, caller-owned evaluation directory.
+        episodes: Planned episode records, including missing and failed attempts.
+        controllers: Controller labels in the required report order.
+        plots: Also write success-rate, best-error and closest-approach-time PNGs.
+
+    Returns:
+        Per-controller summary rows, also written to summary.csv.
     """
     import csv
 

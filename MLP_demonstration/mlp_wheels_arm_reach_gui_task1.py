@@ -373,7 +373,7 @@ def main():
             [TARGET_EE_POS[0], TARGET_EE_POS[1], 0.06],
             dtype=np.float64,
         )
-        # The KUKA script's +0.20 m grasp offset was too high for the Kinova.
+        # The pick target is slightly above the cube's top surface to allow the fingers to grasp it.
         pick_target = cube_position + np.array([0.0, 0.0, 0.06])
         lift_target = cube_position + np.array([0.0, 0.0, 0.45])
 

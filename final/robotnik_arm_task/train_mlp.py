@@ -1,7 +1,13 @@
-""" streamed behaviour cloning. Test data is never opened by this script."""
+"""Train D1 behaviour-cloning policies and run evaluation or collection modes.
+
+Streams verified Train/Validation CSVs, saves checkpoints and reports, and uses
+the original simulator for closed-loop episodes. Test CSVs are never opened.
+"""
 from __future__ import annotations
 
+# ============================================================
 # 1. Imports and fixed, ordered dataset schema
+# ============================================================
 import sys
 sys.dont_write_bytecode = True
 import argparse
@@ -47,6 +53,7 @@ else:
 torch = nn = evaluate = MLP = None
 
 def require_ml_dependencies():
+    """Load Torch and the MLP implementation only when a policy needs them."""
     global torch, nn, evaluate, MLP
     if torch is not None:
         return
@@ -101,7 +108,9 @@ def checkpoint_features(checkpoint):
     return feature_set,names
 
 
+# ============================================================
 # 2. Read-only identity checks and deterministic trajectory selection
+# ============================================================
 def sha(path):
     h = hashlib.sha256()
     with Path(path).open('rb') as f:
@@ -115,6 +124,12 @@ def load_json(path):
 
 
 def prepare(args):
+    """Verify split identities and select full or stratified-pilot Training IDs.
+
+    Returns:
+        Manifest, split record, CSV paths, selected IDs, stratum selections and
+        Train/Validation file hashes. Test membership is checked as metadata only.
+    """
     root = args.results.resolve()
     manifest = load_json(root / METADATA/'pipeline_manifest.json')
     validation = load_json(root / METADATA/'split_validation.json')
@@ -174,7 +189,9 @@ def prepare(args):
     return manifest, validation, files, selected, selection, hashes
 
 
+# ============================================================
 # 3. Streaming batches and training-only preprocessing
+# ============================================================
 def completion_steps(root, condition, target_ids):
     """Metadata labels for training weights/metrics only; never inference inputs."""
     paths = list((Path(root)/METADATA).glob(f'expert_metadata_{condition}_attempts_*.csv'))
@@ -198,6 +215,16 @@ def completion_steps(root, condition, target_ids):
 
 
 def iter_chunks(path, selected, expected_ids, expected_rows, chunk_rows, audit=False, feature_set='baseline33', completion=None):
+    """Yield selected feature/label batches while preserving trajectory state.
+
+    Args:
+        selected: Target IDs retained after optional whole-split auditing.
+        expected_ids: Complete split membership checked when audit is enabled.
+        expected_rows: Complete split row count checked when audit is enabled.
+        completion: Optional target-to-step map; adds a reaching mask to each batch.
+
+    History and filter state continue across chunks and reset between targets.
+    """
     columns = ['trajectory_id', 'time'] + INPUTS + OUTPUTS
     dtypes = {c: np.float32 for c in INPUTS + OUTPUTS}
     dtypes.update(trajectory_id=np.int64, time=np.float64)
@@ -272,17 +299,23 @@ def iter_chunks(path, selected, expected_ids, expected_rows, chunk_rows, audit=F
 
 
 def scaler_info(scaler):
+    """Serialize fitted scaler statistics and sample count for checkpoint provenance."""
     if scaler is None:
         return None
     return dict(mean=scaler.mean_.tolist(), scale=scaler.scale_.tolist(),
                 variance=scaler.var_.tolist(), samples_seen=int(scaler.n_samples_seen_))
 
 
+# ============================================================
 # 4. MLP, Adam training and stable streaming physical-unit evaluation
+# ============================================================
 def predict(checkpoint, observations, device='cpu', history=None, base_filter=None):
     """Inference from N-by-33 observations. History70 requires chronological rows
     from ONE episode and a persistent History100, newly reset for each episode.
     Target37 filtered likewise requires one persistent CausalBaseFilter per episode.
+
+    Returns:
+        An N-by-11 array of wheel commands and arm torques in physical units.
     """
     require_ml_dependencies()
     x = np.asarray(observations, dtype=np.float32)
@@ -333,8 +366,11 @@ def predict(checkpoint, observations, device='cpu', history=None, base_filter=No
     return np.concatenate(predictions) if predictions else np.empty((0,11))
 
 
+# ============================================================
 # 5. CLI, experiment outputs and training orchestration
+# ============================================================
 def main():
+    """Fit a selected MLP and save its best unweighted Validation checkpoint."""
     require_ml_dependencies()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results', type=Path, default=RESULTS)
@@ -659,6 +695,7 @@ def main():
 
 # Validation-only Goal35 regime audit; terminal output, no saved files.
 def goal35_regime_main():
+    """Print unweighted Noisy Validation metrics by navigation/reaching regime."""
     require_ml_dependencies()
     parser = argparse.ArgumentParser(description='Read-only Goal35 Noisy Validation regime metrics; no fitting, training or Test access.')
     parser.add_argument('--evaluate-goal35-regimes',action='store_true',required=True)
@@ -776,8 +813,11 @@ def goal35_regime_main():
     print(json.dumps(dict(test_accessed=False,reports=reports),indent=2,allow_nan=False))
 
 
+# ============================================================
 # 6. Evaluation-only cross-condition comparison (no training or scaler fitting)
+# ============================================================
 def cross_condition_main():
+    """Compare saved same-condition scores with fresh Baseline33 cross-condition inference."""
     require_ml_dependencies()
     parser = argparse.ArgumentParser(description='Reuse same-condition metrics and evaluate the two opposite Validation conditions only.')
     parser.add_argument('--evaluate-cross', action='store_true', required=True)
@@ -1122,10 +1162,28 @@ def all_conditions_main():
     print('Comparison saved:', destination)
 
 
+# ============================================================
 # 7. Closed-loop simulation: imports and state are isolated from training.
+# ============================================================
 def closed_loop_main(qualification=None, dagger=None, episode_args=None,
                      evaluation_record=None, *, dataset_collection=False,
                      allow_test_collection=False, pilot=False, validation_model=None):
+    """Run production-controller episodes using the ordinary closed-loop CLI.
+
+    Args:
+        qualification: Optional Expert collection context with writer/reset plan.
+        dagger: Optional learner-rollout context for Expert shadow labels.
+        episode_args: Parsed rollout options; None selects the CLI parser.
+        evaluation_record: Mutable result dictionary retaining partial episode state.
+        dataset_collection: Include observations and applied-action flags in the trace.
+        allow_test_collection: Explicitly permit Test target IDs for collection only.
+        pilot: Mark the run as benchmark scope without changing its controller.
+        validation_model: Verified checkpoint specification for remaining-six runs.
+
+    Returns:
+        An episode record for no-save, benchmark or collection calls. Saved-only,
+        diagnostic and multiple-target CLI paths may return None.
+    """
     from contextlib import nullcontext, redirect_stdout
     from io import StringIO
 
@@ -2538,8 +2596,11 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None,
         print('Three-controller comparison complete:',plot)
 
 
+# ============================================================
 # 8. Saved-data plotting only; no checkpoint loading or simulator imports.
+# ============================================================
 def plot_closed_loop_analysis_main():
+    """Plot the historical Target 3 comparison without policy inference or simulation."""
     parser = argparse.ArgumentParser(description='Plot saved Target 3 comparison only; never starts simulation.')
     parser.add_argument('--plot-closed-loop-analysis', action='store_true', required=True)
     args = parser.parse_args()
@@ -2904,7 +2965,11 @@ def qualification_main():
 
 
 def validate_remaining_checkpoint(checkpoint, metrics, model, root, manifest, split_record):
-    """Verify a remaining-six artifact and its training provenance, without inference."""
+    """Verify a remaining-six artifact and its training provenance, without inference.
+
+    Returns:
+        Local metadata or reference-checkpoint paths needed for provenance hashing.
+    """
     feature_set, names = checkpoint_features(checkpoint)
     condition, weighted = model['training_condition'], model['weight_reaching']
     config = checkpoint['configuration']
@@ -3401,6 +3466,9 @@ def verify_history70_main():
     print('History70 checks passed: exact max(0,k-100) indexing (including k=99/100/101), chunk continuity, episode reset, single-step parity, missing-step rejection and 70-input schema. No dataset or simulation was accessed.')
 
 
+# ============================================================
+# Main Entry Point
+# ============================================================
 if __name__ == '__main__':
     if '--refresh-saved-comparison' in sys.argv:
         parser = argparse.ArgumentParser(description='Refresh comparisons from saved experiment JSON only.')

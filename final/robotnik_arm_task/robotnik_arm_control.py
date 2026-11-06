@@ -1,4 +1,9 @@
-"""Controllers, stop criteria and setup helpers for the Robotnik mobile base + Kinova arm reaching task."""
+"""Controllers, stop criteria and setup helpers for the Robotnik mobile base + Kinova arm reaching task.
+
+Shared by the original Expert, trajectory collection, and closed-loop evaluation.
+Controller functions return wheel velocities or arm torques; state objects retain
+navigation phases and stopping progress between simulation steps.
+"""
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,6 +19,9 @@ def quaternion2bearing(q_w, q_x, q_y, q_z):
     return base_euler[2]
 
 
+# ============================================================
+# Arm reaching
+# ============================================================
 @dataclass
 class ArmControllerParams:
     """Tuning parameters of the arm reaching controller."""
@@ -39,7 +47,14 @@ def arm_controller(dyn_model, q_pin, q_arm, qd_arm, q_des_arm, q_hold_arm, targe
     gravity-compensated joint PD law tracks. Forward kinematics must already be up to date in
     dyn_model.pin_data for q_pin. When reach_active is False the arm holds q_hold_arm.
 
-    Returns (torque_arm, q_des_arm, qd_des_arm).
+    Args:
+        q_pin: Full robot configuration in Pinocchio joint order.
+        q_des_arm: Previous joint reference, integrated during active reaching.
+        dt: Simulation time step in seconds.
+        reach_active: Whether to reach rather than hold q_hold_arm.
+
+    Returns:
+        Arm torques, updated joint position reference, and joint velocity reference.
     """
     if not reach_active:
         q_des_arm = q_hold_arm.copy()
@@ -108,6 +123,9 @@ def arm_controller(dyn_model, q_pin, q_arm, qd_arm, q_des_arm, q_hold_arm, targe
     return torque_arm, q_des_arm, qd_des_arm
 
 
+# ============================================================
+# Simulation stopping conditions
+# ============================================================
 @dataclass
 class StopCriteria:
     """Thresholds and running state for the simulation stop conditions."""
@@ -125,6 +143,8 @@ def check_stop(criteria, current_time, time_step, ee_dist_error, base_navigation
 
     Returns a message describing why the simulation should stop, or None to continue.
     Stall tracking only runs once the base navigation is done (the arm is reaching).
+    Updates criteria in place using the caller's EE error; its tracked best error
+    changes only on meaningful improvement, rather than at every new minimum.
     """
     if criteria.max_steps and current_time / time_step >= criteria.max_steps:
         return f"Reached step cap {criteria.max_steps} at t={current_time:.2f}s"
@@ -143,6 +163,9 @@ def check_stop(criteria, current_time, time_step, ee_dist_error, base_navigation
     return None
 
 
+# ============================================================
+# Mobile-base navigation
+# ============================================================
 @dataclass
 class BaseControllerParams:
     """Tuning parameters of the mobile-base navigation controller."""
@@ -171,6 +194,7 @@ def base_controller(state, base_pos, base_bearing, goal_pos, goal_bearing, curre
 
     Returns the wheel velocity commands [front_right, front_left, back_left, back_right] (rad/s).
     Once navigation is done the base holds position (zero wheel velocities).
+    goal_pos is a world-frame XY position; goal_bearing is the desired yaw in radians.
     """
     if state.done:
         return np.zeros(4)
@@ -207,6 +231,9 @@ def base_controller(state, base_pos, base_bearing, goal_pos, goal_bearing, curre
     return np.array([rw, lw, lw, rw])
 
 
+# ============================================================
+# Fixed gripper configuration
+# ============================================================
 FINGER_JOINT_NAMES = [
     "robot_j2s7s300_joint_finger_1",
     "robot_j2s7s300_joint_finger_tip_1",
@@ -237,6 +264,7 @@ def configure_gripper_fingers(sim, client, rid, fixed_angles=None):
     orig_set_torque = sim._SetMotorTorqueByIds
 
     def custom_set_torque(motor_ids, commands, index=0):
+        """Forward wheel/arm commands while holding the fingers in position mode."""
         orig_set_torque(motor_ids[:11], commands[:11], index=index)
         sim.pybullet_client.setJointMotorControlArray(
             bodyIndex=sim.bot[index].bot_pybullet,
