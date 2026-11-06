@@ -1,5 +1,13 @@
 # MLP Demonstration
 
+## Demonstration Videos
+
+- [Task 1 — Pick Up & Lift](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task1.mp4)
+- [Task 2 — Pick Up & Deliver](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task2.mp4)
+- [Task 3 — Object Sorting](https://github.com/RehamFaqehi1/COMP0245-project/releases/download/comp0245-demo-v1.0/Task3.mp4)
+
+View the [full GitHub Release](https://github.com/RehamFaqehi1/COMP0245-project/releases/tag/comp0245-demo-v1.0).
+
 ## Project context
 
 This project explores a mobile robot with a Kinova arm working in a simulated
