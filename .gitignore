@@ -3,5 +3,6 @@ provenance/
 final/robotnik_arm_task/results/datasets/
 final/robotnik_arm_task/results/metadata/*.sqlite
 .pixi/
+*:Zone.Identifier
 __pycache__/
 *.pyc

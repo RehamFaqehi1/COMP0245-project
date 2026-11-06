@@ -5,6 +5,18 @@ towards a target and reach it with the end effector. An Original Expert combines
 base navigation and arm control; the MLP learns to predict its commands from
 observations.
 
+## Final GUI demonstration — Tasks 1–3
+
+Start with the [final demonstration guide](MLP_demonstration/README.md) for the
+three task GUIs in `MLP_demonstration/`. The tasks progress from picking up and
+lifting an object, to delivery, to sorting. The saved MLP controls wheel navigation;
+a Cartesian feedback controller handles the arm.
+
+The experimental results, reproduction commands and research workflows are
+documented below, separately from the final demonstration.
+
+## Experimental background
+
 The saved dataset contains **500 clean and 500 noisy Expert trajectories** on the
 same 500 targets. Targets, rather than individual rows, are split into **350
 training, 75 validation and 75 test targets**, shared across both conditions.
@@ -68,8 +80,9 @@ they are not among the 12 trained MLP models documented here.
 ```text
 COMP0245-project/
 ├── README.md
+├── MLP_demonstration/               # Final GUI demonstration (Tasks 1–3)
 ├── RoboEnv/                         # Simulator, assets and Pixi environment
-├── final/robotnik_arm_task/
+├── final/robotnik_arm_task/          # MLP training, experiments, checkpoints and closed-loop evaluations
 │   ├── robotnik_arm_control.py      # Original Expert
 │   ├── robotnik_arm_task.py         # Original instructor example
 │   ├── generate_targets.py
@@ -89,8 +102,16 @@ COMP0245-project/
 │       ├── evaluations/            # New runs; existing results in historical/
 │       ├── figures/                # Shared figures and data-quality reports
 │       └── metadata/               # Manifest, split record and collection state
+├── ACT_experiment/                  # ACT experiments
+├── LSTM_experiment/                 # LSTM experiments
+├── ray_sensors/                     # Ray-sensor and obstacle-avoidance experiments
+├── preprocessing_enhanced/          # Supporting feature definitions and scalers
 └── provenance/                     # Migration hashes, source/data history
 ```
+
+The preprocessing files and fitted scalers in `preprocessing_enhanced/` are stored
+locally and it is distributed separately through GitHub Releases, rather than
+committed to Git.
 
 The [instructor README](final/robotnik_arm_task/README.md) and Original Expert are
 preserved. Experiment selection still goes through `train_mlp.py`;

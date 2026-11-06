@@ -1,0 +1,10 @@
+# 训练权重、缓存
+act/last/
+*.pt
+*.pth
+*.bin
+logs/
+__pycache__/
+*.ipynb_checkpoints
+last/last/pretrained_model/model.safetensors
+last/last/training_state/optimizer_state.safetensors
