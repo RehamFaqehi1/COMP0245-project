@@ -438,6 +438,10 @@ def write_validation_reports(output, episodes, controllers, plots=False):
     """
     import csv
 
+    model_fields = (['controller_family','training_condition','observation_condition',
+                     'feature_set','weight_reaching','checkpoint_sha256']
+                    if any('training_condition' in episode for episode in episodes) else [])
+
     def write_csv(name, rows, fields):
         def write(handle):
             writer = csv.DictWriter(handle, fieldnames=fields)
@@ -472,12 +476,13 @@ def write_validation_reports(output, episodes, controllers, plots=False):
             stop_reason=episode.get('stop_reason', ''),
             failure_information=episode.get('evaluation_failure', ''),
         ))
+        per_target[-1].update({key: episode.get(key) for key in model_fields})
     write_csv('per_target.csv', per_target, [
         'model', 'target_id', 'minimum_true_ee_error_m', 'minimum_true_ee_error_cm',
         'final_true_ee_error_m', 'final_true_ee_error_cm', 'time_to_minimum_s',
         'episode_duration_s', 'ee_success_5cm', 'ee_success_10cm',
         'evaluation_status', 'evaluation_scope', 'stop_reason', 'failure_information',
-    ])
+    ]+model_fields)
 
     # Missing/running/interrupted attempts are not completed evaluations or failures.
     aggregates = proximity_summary([
@@ -510,6 +515,7 @@ def write_validation_reports(output, episodes, controllers, plots=False):
             final_true_ee_mean_cm=None, time_to_closest_mean_s=None,
             episode_duration_mean_s=None,
         )
+        row.update({key: planned[0].get(key) for key in model_fields})
         if eligible:
             row.update(
                 final_true_ee_mean_cm=float(np.mean([
@@ -528,7 +534,7 @@ def write_validation_reports(output, episodes, controllers, plots=False):
         'minimum_true_ee_mean_cm', 'minimum_true_ee_median_cm',
         'minimum_true_ee_p90_cm', 'minimum_true_ee_std_cm', 'final_true_ee_mean_cm',
         'time_to_closest_mean_s', 'episode_duration_mean_s',
-    ])
+    ]+model_fields)
     if not plots:
         return summaries
 

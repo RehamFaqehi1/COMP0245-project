@@ -1125,7 +1125,7 @@ def all_conditions_main():
 # 7. Closed-loop simulation: imports and state are isolated from training.
 def closed_loop_main(qualification=None, dagger=None, episode_args=None,
                      evaluation_record=None, *, dataset_collection=False,
-                     allow_test_collection=False, pilot=False):
+                     allow_test_collection=False, pilot=False, validation_model=None):
     from contextlib import nullcontext, redirect_stdout
     from io import StringIO
 
@@ -1361,6 +1361,14 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None,
         checkpoint_condition = args.training_condition
         if args.benchmark_expert_base_learned_arm and checkpoint_path!=(root/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt').resolve():
             raise ValueError('Expert-base pilot requires the original Target37 Noisy checkpoint')
+    if validation_model is not None:
+        if (args.controller!=validation_model['controller_family'] or not args.no_save
+                or args.observations!='noisy' or args.interface_steps or args.diagnostics
+                or benchmark or pilot or dataset_collection or qualification is not None
+                or dagger is not None):
+            raise ValueError('Checkpoint specification requires an ordinary noisy Validation episode')
+        checkpoint_path = Path(validation_model['checkpoint'])
+        checkpoint_condition = validation_model['training_condition']
     benchmark_sources = {}
     if args.benchmark_full_expert:
         feature_set,checkpoint_condition = 'expert',None
@@ -1377,6 +1385,9 @@ def closed_loop_main(qualification=None, dagger=None, episode_args=None,
         require_ml_dependencies()
         checkpoint_hash = sha(checkpoint_path)
         ck = torch.load(checkpoint_path,map_location='cpu',weights_only=True)
+        if validation_model is not None:
+            validate_remaining_checkpoint(ck, load_json(checkpoint_path.parent/'metrics.json'),
+                validation_model, root, manifest, load_json(root/METADATA/'split_validation.json'))
         if benchmark:
             checkpoint_features(ck)
             metrics_path = checkpoint_path.parent/'metrics.json'
@@ -2892,6 +2903,71 @@ def qualification_main():
     print('Review each paired outcome, true errors and failures before approving any recovery demonstrations. Files:',data_path,metadata_path)
 
 
+def validate_remaining_checkpoint(checkpoint, metrics, model, root, manifest, split_record):
+    """Verify a remaining-six artifact and its training provenance, without inference."""
+    feature_set, names = checkpoint_features(checkpoint)
+    condition, weighted = model['training_condition'], model['weight_reaching']
+    config = checkpoint['configuration']
+    for key, value in checkpoint.items():
+        # History70 metrics stores the learning curve under this same key.
+        if key=='model_state_dict' or (key=='history' and feature_set=='history70'):
+            continue
+        if key not in metrics or metrics[key]!=value:
+            raise ValueError(f'Checkpoint/metrics mismatch: {model["controller_family"]}/{key}')
+    count = split_record['rows'][condition]['train']
+    if (feature_set!=model['feature_set'] or names!=checkpoint['inputs']
+            or config.get('feature_set')!=feature_set or config.get('condition')!=condition
+            or config.get('full_train') is not True or config.get('preprocessing')!='scaled'
+            or bool(config.get('weight_reaching',False))!=weighted
+            or checkpoint['preprocessing']['kind']!='scaled'
+            or checkpoint['outputs']!=OUTPUTS or checkpoint['hidden_layers']!=list(HIDDEN)
+            or checkpoint.get('test_accessed') is not False
+            or checkpoint['selected_target_ids']!=sorted(manifest['splits']['train'])
+            or checkpoint['manifest_sha256']!=sha(root/METADATA/'pipeline_manifest.json')
+            or checkpoint['split_validation_sha256']!=sha(root/METADATA/'split_validation.json')
+            or checkpoint['selected_training_samples']!=count
+            or metrics['training']['samples']!=count
+            or metrics['validation']['samples']!=split_record['rows'][condition]['validation']
+            or not math.isclose(metrics['validation']['scaled_mse'],checkpoint['best_validation_mse'],
+                                rel_tol=1e-6,abs_tol=1e-10)):
+        raise ValueError('Remaining checkpoint training/feature provenance mismatch')
+    recorded_hashes = {key.replace('\\','/'): value
+                       for key,value in split_record['output_sha256'].items()}
+    for split in ('train','validation'):
+        if checkpoint['input_sha256'][split]!=recorded_hashes[f'processed_data/{split}_{condition}.csv']:
+            raise ValueError('Remaining checkpoint recorded dataset hash mismatch')
+    dependencies = []
+    weighting = checkpoint.get('training_weighting')
+    if weighted:
+        _, metadata_path = completion_steps(root,condition,set(manifest['splits']['train']))
+        expected = dict(navigation=1.,reaching=2.,
+            rule='time step >= metadata nav_completed_s step; phase is not used',
+            metadata_sha256=sha(metadata_path),
+            loss='sum(weight * mean_11(squared standardised-output error)) / sum(weight)',
+            scaler_fitting='unweighted selected Training rows',
+            checkpoint_selection='original unweighted Validation MSE')
+        if (feature_set!='goal35' or not isinstance(weighting,dict)
+                or any(weighting.get(key)!=value for key,value in expected.items())):
+            raise ValueError('Reaching2 training-weight provenance mismatch')
+        dependencies.append(metadata_path)
+    elif weighting is not None:
+        raise ValueError('Unexpected training weighting')
+    if feature_set=='target37_filtered':
+        reference_path = root/EXPERIMENTS/f'mlp_{condition}_target37_scaled_full/best_model.pt'
+        reference = torch.load(reference_path,map_location='cpu',weights_only=True)
+        if (checkpoint_features(reference)[0]!='target37'
+                or reference['configuration']['condition']!=condition
+                or sha(reference_path)!=checkpoint['scaler_reference']['checkpoint_sha256']
+                or reference['preprocessing']!=checkpoint['scaler_reference']['preprocessing']
+                or reference['preprocessing']['y_scaler']!=checkpoint['preprocessing']['y_scaler']
+                or any(reference[key]!=checkpoint[key] for key in (
+                    'manifest_sha256','split_validation_sha256','input_sha256',
+                    'selected_target_ids','selected_training_samples'))):
+            raise ValueError('Filtered checkpoint original Target37 scaler provenance mismatch')
+        dependencies.append(reference_path)
+    return dependencies
+
+
 def closed_loop_validation_main():
     """Reproducible standard Validation runs using the existing simulator runner.
 
@@ -2917,7 +2993,9 @@ def closed_loop_validation_main():
         epilog=resume_policy)
     parser.add_argument('--validate-closed-loop', action='store_true', required=True)
     parser.add_argument('--qualification', action='store_true',
-                        help='Use the first three sorted Validation IDs for all seven controllers.')
+                        help='Use the first three sorted Validation IDs for the selected model set.')
+    parser.add_argument('--remaining6', action='store_true',
+                        help='Opt in to the six remaining checkpoints, with independent reports.')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--resume', action='store_true',
                         help='Resume an existing compatible run; skip completed and failed episodes.')
@@ -2956,6 +3034,40 @@ def closed_loop_validation_main():
         'target37': RESULTS/EXPERIMENTS/'mlp_noisy_target37_scaled_full/best_model.pt',
         'target37_filtered': RESULTS/EXPERIMENTS/'mlp_noisy_target37_filtered_scaled_full/best_model.pt',
     }
+    models = {}
+    reference_paths = []
+    if args.remaining6:
+        variants = [
+            ('clean_goal35','goal35','clean',False),
+            ('clean_goal35_reaching2','goal35','clean',True),
+            ('noisy_goal35_reaching2','goal35','noisy',True),
+            ('clean_history70','history70','clean',False),
+            ('clean_target37','target37','clean',False),
+            ('clean_target37_filtered','target37_filtered','clean',False),
+        ]
+        models = {label: dict(controller_family=family,feature_set=family,
+                             training_condition=condition,weight_reaching=weighted)
+                  for label,family,condition,weighted in variants}
+        controllers = list(models)
+        checkpoint_paths = {
+            label: RESULTS/EXPERIMENTS/(
+                f'mlp_{condition}_{family}'+('_reaching2' if weighted else '')+'_scaled_full/best_model.pt')
+            for label,family,condition,weighted in variants}
+        reference_paths = [RESULTS/EVALUATIONS/'ee_proximity_validation75_v1'/name
+                           for name in ('manifest.json','summary.csv')]
+        reference_identity = load_json(reference_paths[0])['identity']
+        with reference_paths[1].open(newline='',encoding='utf-8-sig') as handle:
+            reference_rows = list(csv.DictReader(handle))
+        if (reference_identity['target_ids']!=sorted(pipeline['splits']['validation'])
+                or reference_identity['observations']!='noisy'
+                or reference_identity['gui'] is not False
+                or reference_identity['qualification_subset'] is not False
+                or {row['model'] for row in reference_rows}!=set(reference_identity['controllers'])
+                or len(reference_rows)!=7
+                or any(int(row['evaluated_targets'])!=75 or any(int(row[key])!=0 for key in (
+                    'evaluation_failures','missing_evaluations','interrupted_evaluations','running_evaluations'))
+                    for row in reference_rows)):
+            raise ValueError('Reference must be the completed seven-controller 525-episode evaluation')
     # Fail before creating a run directory or starting any simulator. Reading the
     # entire file for SHA-256 also checks readability beyond the first byte.
     checkpoint_hashes, checkpoint_errors = {}, []
@@ -2975,6 +3087,19 @@ def closed_loop_validation_main():
     if checkpoint_errors:
         raise RuntimeError('Checkpoint preflight failed; no episodes started:\n'
                            + '\n'.join(checkpoint_errors))
+    artifact_paths = []
+    model_metadata = {}
+    if args.remaining6:
+        require_ml_dependencies()
+        for label, model in models.items():
+            checkpoint_path = checkpoint_paths[label]
+            metrics_path = checkpoint_path.parent/'metrics.json'
+            checkpoint = torch.load(checkpoint_path,map_location='cpu',weights_only=True)
+            artifact_paths.extend(validate_remaining_checkpoint(
+                checkpoint,load_json(metrics_path),model,RESULTS,pipeline,split_record))
+            artifact_paths.append(metrics_path)
+            model_metadata[label] = dict(**model,observation_condition='noisy',
+                checkpoint_sha256=checkpoint_hashes[label])
 
     deployment = [
         robo/'configs/robotnik_arm.json', task/'robotnik_arm_control.py',
@@ -2992,7 +3117,8 @@ def closed_loop_validation_main():
             raise ValueError(f'Production source/configuration mismatch: {relative}')
     source_paths = sorted(set(deployment + [Path(__file__).resolve(), task/'result_paths.py']
                               + list((task/'mlp').glob('*.py'))))
-    provenance_paths = source_paths+[manifest_path, split_path, target_path]
+    provenance_paths = sorted(set(source_paths+[manifest_path, split_path, target_path]
+                                 +artifact_paths+reference_paths))
 
     def now():
         return datetime.now(timezone.utc).isoformat()
@@ -3005,7 +3131,7 @@ def closed_loop_validation_main():
                 packages[name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:
                 packages[name] = None
-        return dict(
+        result = dict(
             format='ee_proximity_validation75_v1', qualification_subset=args.qualification,
             controllers=controllers, target_ids=target_ids, observations='noisy', gui=False,
             evaluation_scope='validation', resume_policy=resume_policy,
@@ -3030,19 +3156,39 @@ def closed_loop_validation_main():
                     'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
                     'CUDA_VISIBLE_DEVICES')}),
         )
+        if args.remaining6:
+            result.update(format='ee_proximity_validation75_remaining6_v1',models=models,
+                          reference_run='ee_proximity_validation75_v1')
+        return result
 
     identity = fingerprint()
+    if args.remaining6:
+        if (any(identity[key]!=reference_identity[key] for key in (
+                'observations','gui','evaluation_scope','metrics','stopping','environment'))
+                or any(reference_identity['seeds'][str(tid)]!=identity['seeds'][str(tid)]
+                       for tid in target_ids)):
+            raise ValueError('Configuration, environment or seeds differ from the completed evaluation')
+        changed_sources = {Path(__file__).resolve().relative_to(project).as_posix(),
+                           (task/'mlp/reporting.py').relative_to(project).as_posix()}
+        for path,digest in reference_identity['source_and_metadata_hashes'].items():
+            if path not in changed_sources and identity['source_and_metadata_hashes'].get(path)!=digest:
+                raise ValueError(f'Production/feature provenance differs from reference: {path}')
     if any(identity['checkpoint_hashes'][controller]['sha256'] != digest
            for controller, digest in checkpoint_hashes.items()):
         raise RuntimeError('Checkpoint changed during preflight')
     name = ('ee_proximity_validation3_qualification_v1' if args.qualification
             else 'ee_proximity_validation75_v1')
+    if args.remaining6:
+        name = ('ee_proximity_validation3_remaining6_qualification_v1' if args.qualification
+                else 'ee_proximity_validation75_remaining6_v1')
     requested = args.output or RESULTS/EVALUATIONS/name
     if requested.is_symlink():
         parser.error('Output directory must not be a symlink')
     output = requested.resolve()
     if output.parent != (RESULTS/EVALUATIONS).resolve():
         parser.error('Output must be directly under results/evaluations')
+    if args.remaining6 and output==(RESULTS/EVALUATIONS/'ee_proximity_validation75_v1').resolve():
+        parser.error('The completed reference evaluation is read-only')
     if args.resume:
         if not output.is_dir():
             parser.error('--resume requires an existing run directory')
@@ -3077,6 +3223,9 @@ def closed_loop_validation_main():
 
         def validate_completed(episode):
             controller = episode['controller']
+            if args.remaining6 and any(episode.get(key)!=value
+                                      for key,value in model_metadata[controller].items()):
+                raise ValueError('Completed model training/observation metadata mismatch')
             if (episode.get('evaluation_scope') != 'validation'
                     or episode.get('target_split') != 'validation'
                     or episode.get('checkpoint_sha256') !=
@@ -3120,7 +3269,8 @@ def closed_loop_validation_main():
             ordered = [records.get((controller, tid), dict(
                 controller=controller, target_id=tid, evaluation_scope='validation',
                 target_split='validation', evaluation_status='missing',
-                evaluation_failure='Not yet attempted', **ee_proximity(None)))
+                evaluation_failure='Not yet attempted', **ee_proximity(None),
+                **model_metadata.get(controller,{})))
                 for controller in controllers for tid in target_ids]
             return write_validation_reports(output, ordered, controllers, plots=plots)
 
@@ -3141,29 +3291,39 @@ def closed_loop_validation_main():
                         raise RuntimeError('Evaluation provenance changed; stopping run')
                     attempt = dict(
                         controller=controller, target_id=target_id, target_split='validation',
-                        evaluation_scope='validation', evaluation_status='running', started_utc=now())
+                        evaluation_scope='validation', evaluation_status='running', started_utc=now(),
+                        **model_metadata.get(controller,{}))
                     progress['attempts'].append(attempt)
                     persist()
-                    argv = [str(Path(__file__)), '--closed-loop', '--controller', controller,
+                    family = models[controller]['controller_family'] if args.remaining6 else controller
+                    argv = [str(Path(__file__)), '--closed-loop', '--controller', family,
                             '--target-id', str(target_id), '--observations', 'noisy', '--no-save']
                     option = {'goal35': '--goal35-checkpoint', 'history70': '--history70-checkpoint',
                               'target37': '--target37-checkpoint',
-                              'target37_filtered': '--target37-checkpoint'}.get(controller)
+                              'target37_filtered': '--target37-checkpoint'}.get(family)
                     if option:
                         argv += [option, str(checkpoint_paths[controller])]
                     outcome = {}
                     original_argv = sys.argv
                     try:
                         sys.argv = argv
-                        closed_loop_main(evaluation_record=outcome)
+                        if args.remaining6:
+                            closed_loop_main(evaluation_record=outcome,validation_model=dict(
+                                **models[controller],checkpoint=str(checkpoint_paths[controller])))
+                        else:
+                            closed_loop_main(evaluation_record=outcome)
                         if fingerprint() != identity or sha(run_manifest) != manifest_hash:
                             raise RuntimeError('Evaluation provenance changed during episode')
-                        if (outcome.get('controller') != controller
+                        if (outcome.get('controller') != family
                                 or outcome.get('target_id') != target_id):
                             raise ValueError('Runner returned a different controller/target')
                         if outcome.get('evaluation_status') != 'completed':
                             raise RuntimeError(outcome.get(
                                 'evaluation_failure', outcome.get('stop_reason', 'Episode failed')))
+                        if args.remaining6:
+                            if outcome.get('checkpoint_sha256')!=checkpoint_hashes[controller]:
+                                raise ValueError('Runner loaded a different model checkpoint')
+                            outcome.update(controller=controller,**model_metadata[controller])
                         validate_completed(outcome)
                     except Exception as exc:
                         outcome.update(evaluation_status='failed',
@@ -3179,6 +3339,7 @@ def closed_loop_validation_main():
                         attempt.update(controller=controller, target_id=target_id,
                                        evaluation_scope='validation', target_split='validation',
                                        finished_utc=now())
+                        attempt.update(model_metadata.get(controller,{}))
                         attempt.update(ee_proximity(attempt.get('minimum_true_ee_error_m')))
                         persist()
                         report()
